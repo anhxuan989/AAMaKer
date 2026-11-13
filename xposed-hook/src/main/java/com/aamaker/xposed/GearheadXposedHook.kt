@@ -1,20 +1,21 @@
 package com.aamaker.xposed
 
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.ActivityInfo
-import android.content.pm.ApplicationInfo
 import android.content.pm.InstallSourceInfo
 import android.content.pm.ResolveInfo
-import android.location.Location
 import android.os.Build
 import android.os.Bundle
-import android.os.Parcel
+import android.util.Log
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XC_MethodReplacement
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.lang.reflect.Field
+import java.lang.reflect.Modifier
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -22,20 +23,66 @@ class GearheadXposedHook : IXposedHookLoadPackage {
 
     private val hookedSensorClasses: MutableSet<String> =
         Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private val sensorFieldCache = ConcurrentHashMap<Class<*>, SensorFieldLayout>()
+
+    // Chống đệ quy lặp 3-4 lần khi ApplicationPackageManager ủy quyền nội bộ (ví dụ queryIntentActivities -> queryIntentActivitiesAsUser)
+    private val pmHookReentrancyGuard = object : ThreadLocal<Boolean>() {
+        override fun initialValue(): Boolean = false
+    }
+
+    private data class SensorFieldLayout(
+        val sensorTypeField: Field?,
+        val intArrayFields: List<Field>,
+        val floatArrayFields: List<Field>,
+        val byteArrayFields: List<Field>
+    )
+
+    private fun logInfo(msg: String) {
+        Log.i(LOG_TAG, msg)
+        try {
+            XposedBridge.log("[$LOG_TAG] $msg")
+        } catch (_: Throwable) {
+        }
+    }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         val pkgName = lpparam.packageName
+        val processName = lpparam.processName ?: pkgName
 
         if (pkgName == AAMAKER_PACKAGE) {
             hookSelfStatus(lpparam)
             return
         }
 
-        if (pkgName == GEARHEAD_PACKAGE || pkgName == GMS_PACKAGE) {
-            XposedBridge.log("[AAMaKer-Xposed] Đang kích hoạt bypass nguồn cài đặt & mở khóa khi xe di chuyển cho: $pkgName")
+        if (pkgName == GEARHEAD_PACKAGE) {
+            // Chỉ kích hoạt trên tiến trình chính / projection / car của Gearhead, bỏ qua crashpad / sandbox phụ
+            if (processName.contains(":crashpad", ignoreCase = true) ||
+                processName.contains(":sandboxed", ignoreCase = true)
+            ) {
+                return
+            }
+            logInfo("Kích hoạt hook an toàn trên Gearhead ($processName)")
             hookPackageInstallerSourceChecks(lpparam)
             hookActivityDistractionOptimization(lpparam)
-            hookCarDrivingRestrictionsAndSensors(lpparam, isGearheadProcess = (pkgName == GEARHEAD_PACKAGE))
+            hookCarDrivingRestrictionsAndSensors(lpparam)
+            return
+        }
+
+        if (pkgName == GMS_PACKAGE) {
+            // CỰC KỲ QUAN TRỌNG: GMS có hàng chục process (persistent, unstable, gapps, auth, carrier...).
+            // Tuyệt đối chỉ hook tiến trình thực sự là GMS Car (:car / .car), không dùng contains("car") tránh dính "carrier"!
+            val isDedicatedCarProcess = processName == "com.google.android.gms.car" ||
+                processName.endsWith(":car", ignoreCase = true) ||
+                processName.endsWith(".car", ignoreCase = true)
+
+            if (!isDedicatedCarProcess) {
+                return
+            }
+
+            logInfo("Kích hoạt hook chuyên biệt cho tiến trình GMS Car ($processName)")
+            hookPackageInstallerSourceChecks(lpparam)
+            hookActivityDistractionOptimization(lpparam)
+            hookCarDrivingRestrictionsAndSensors(lpparam)
         }
     }
 
@@ -47,9 +94,24 @@ class GearheadXposedHook : IXposedHookLoadPackage {
                 "isXposedModuleActive",
                 XC_MethodReplacement.returnConstant(true)
             )
+            logInfo("Đã xác nhận trạng thái active trên AAMaKer ($AAMAKER_PACKAGE)")
         } catch (t: Throwable) {
-            XposedBridge.log("[AAMaKer-Xposed] Không thể hook trạng thái nội bộ: ${t.message}")
+            logInfo("Không thể hook trạng thái nội bộ: ${t.message}")
         }
+    }
+
+    private fun isSafeThirdPartyPackage(pkgName: String?): Boolean {
+        if (pkgName.isNullOrBlank()) return false
+        if (pkgName in SYSTEM_EXCLUDED_PACKAGES) return false
+        if (pkgName.startsWith("com.android.") ||
+            pkgName == "android" ||
+            pkgName.startsWith("com.google.android.gms") ||
+            pkgName.startsWith("com.google.android.gsf") ||
+            pkgName.startsWith("com.google.android.projection.gearhead")
+        ) {
+            return false
+        }
+        return true
     }
 
     private fun hookPackageInstallerSourceChecks(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -65,7 +127,13 @@ class GearheadXposedHook : IXposedHookLoadPackage {
                 String::class.java,
                 object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        param.result = VENDING_PACKAGE
+                        if (param.hasThrowable()) return
+                        val targetPkg = param.args.firstOrNull() as? String ?: return
+                        if (!isSafeThirdPartyPackage(targetPkg)) return
+                        val currentResult = param.result as? String
+                        if (currentResult != VENDING_PACKAGE) {
+                            param.result = VENDING_PACKAGE
+                        }
                     }
                 }
             )
@@ -77,22 +145,103 @@ class GearheadXposedHook : IXposedHookLoadPackage {
                     String::class.java,
                     object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) {
+                            if (param.hasThrowable()) return
+                            val targetPkg = param.args.firstOrNull() as? String ?: return
+                            if (!isSafeThirdPartyPackage(targetPkg)) return
                             val originalInfo = param.result as? InstallSourceInfo ?: return
+                            if (originalInfo.installingPackageName == VENDING_PACKAGE &&
+                                originalInfo.initiatingPackageName == VENDING_PACKAGE
+                            ) {
+                                return
+                            }
                             try {
                                 XposedHelpers.setObjectField(originalInfo, "mInitiatingPackageName", VENDING_PACKAGE)
                                 XposedHelpers.setObjectField(originalInfo, "mInstallingPackageName", VENDING_PACKAGE)
                                 XposedHelpers.setObjectField(originalInfo, "mOriginatingPackageName", VENDING_PACKAGE)
                                 param.result = originalInfo
-                            } catch (e: Throwable) {
-                                XposedBridge.log("[AAMaKer-Xposed] Lỗi sửa InstallSourceInfo: ${e.message}")
+                            } catch (_: Throwable) {
+                                // Fallback tạo mới InstallSourceInfo đúng cho targetPkg nếu hidden field bị chặn
+                                try {
+                                    val spoofed = createSpoofedInstallSourceInfo(originalInfo)
+                                    if (spoofed != null) {
+                                        param.result = spoofed
+                                    }
+                                } catch (_: Throwable) {
+                                }
                             }
                         }
                     }
                 )
             }
         } catch (t: Throwable) {
-            XposedBridge.log("[AAMaKer-Xposed] Lỗi khi hook ApplicationPackageManager: ${t.message}")
+            logInfo("Lỗi khi hook ApplicationPackageManager: ${t.message}")
         }
+    }
+
+    private fun createSpoofedInstallSourceInfo(original: InstallSourceInfo): InstallSourceInfo? {
+        for (ctor in InstallSourceInfo::class.java.declaredConstructors) {
+            ctor.isAccessible = true
+            val paramTypes = ctor.parameterTypes
+            // Android 11-12: (String initiating, SigningInfo?, String originating, String installing)
+            if (paramTypes.size == 4 &&
+                paramTypes[0] == String::class.java &&
+                paramTypes[2] == String::class.java &&
+                paramTypes[3] == String::class.java
+            ) {
+                val signingInfo = try {
+                    original.initiatingPackageSigningInfo
+                } catch (_: Throwable) {
+                    null
+                }
+                return ctor.newInstance(VENDING_PACKAGE, signingInfo, VENDING_PACKAGE, VENDING_PACKAGE) as InstallSourceInfo
+            }
+            // Android 13-16+: (String initiating, SigningInfo?, String originating, String installing, String? updateOwner, int packageSource)
+            if (paramTypes.size == 6 &&
+                paramTypes[0] == String::class.java &&
+                paramTypes[2] == String::class.java &&
+                paramTypes[3] == String::class.java &&
+                paramTypes[5] == Int::class.javaPrimitiveType
+            ) {
+                val signingInfo = try {
+                    original.initiatingPackageSigningInfo
+                } catch (_: Throwable) {
+                    null
+                }
+                return ctor.newInstance(
+                    VENDING_PACKAGE,
+                    signingInfo,
+                    VENDING_PACKAGE,
+                    VENDING_PACKAGE,
+                    VENDING_PACKAGE,
+                    2 // PackageInstaller.PACKAGE_SOURCE_STORE
+                ) as InstallSourceInfo
+            }
+        }
+        return null
+    }
+
+    private fun isCarRelatedIntent(intent: Intent?): Boolean {
+        if (intent == null) return false
+        val action = intent.action
+        if (action == "androidx.car.app.CarAppService" ||
+            action == "android.media.browse.MediaBrowserService" ||
+            action == Intent.ACTION_MAIN
+        ) {
+            val categories = intent.categories
+            if (categories != null) {
+                for (cat in categories) {
+                    if (cat.contains("CAR", ignoreCase = true) ||
+                        cat == Intent.CATEGORY_LAUNCHER ||
+                        cat == Intent.CATEGORY_INFO
+                    ) {
+                        return true
+                    }
+                }
+            }
+            if (action != Intent.ACTION_MAIN) return true
+        }
+        val pkg = intent.`package` ?: intent.component?.packageName
+        return isSafeThirdPartyPackage(pkg)
     }
 
     private fun hookActivityDistractionOptimization(lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -106,19 +255,55 @@ class GearheadXposedHook : IXposedHookLoadPackage {
                 appPmClass,
                 "getActivityInfo",
                 object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        if (pmHookReentrancyGuard.get() == true) {
+                            param.setObjectExtra(EXTRA_SKIP_NESTED, true)
+                            return
+                        }
+                        pmHookReentrancyGuard.set(true)
+                    }
+
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        val actInfo = param.result as? ActivityInfo ?: return
-                        markActivityDistractionOptimized(actInfo)
+                        if (param.getObjectExtra(EXTRA_SKIP_NESTED) == true) return
+                        try {
+                            if (param.hasThrowable()) return
+                            val comp = param.args.firstOrNull() as? ComponentName
+                            if (comp != null && !isSafeThirdPartyPackage(comp.packageName)) return
+                            val actInfo = param.result as? ActivityInfo ?: return
+                            if (!isSafeThirdPartyPackage(actInfo.packageName)) return
+                            markActivityDistractionOptimized(actInfo)
+                        } finally {
+                            pmHookReentrancyGuard.set(false)
+                        }
                     }
                 }
             )
 
             val queryHook = object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (pmHookReentrancyGuard.get() == true) {
+                        param.setObjectExtra(EXTRA_SKIP_NESTED, true)
+                        return
+                    }
+                    pmHookReentrancyGuard.set(true)
+                }
+
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    val list = param.result as? List<*> ?: return
-                    for (item in list) {
-                        val resolveInfo = item as? ResolveInfo ?: continue
-                        resolveInfo.activityInfo?.let { markActivityDistractionOptimized(it) }
+                    if (param.getObjectExtra(EXTRA_SKIP_NESTED) == true) return
+                    try {
+                        if (param.hasThrowable()) return
+                        val intent = param.args.firstOrNull() as? Intent
+                        if (!isCarRelatedIntent(intent)) return
+                        val list = param.result as? List<*> ?: return
+                        for (item in list) {
+                            val resolveInfo = item as? ResolveInfo ?: continue
+                            val actInfo = resolveInfo.activityInfo ?: continue
+                            if (isSafeThirdPartyPackage(actInfo.packageName)) {
+                                markActivityDistractionOptimized(actInfo)
+                            }
+                        }
+                    } finally {
+                        pmHookReentrancyGuard.set(false)
                     }
                 }
             }
@@ -126,43 +311,41 @@ class GearheadXposedHook : IXposedHookLoadPackage {
             XposedBridge.hookAllMethods(appPmClass, "queryIntentActivitiesAsUser", queryHook)
 
             val resolveHook = object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (pmHookReentrancyGuard.get() == true) {
+                        param.setObjectExtra(EXTRA_SKIP_NESTED, true)
+                        return
+                    }
+                    pmHookReentrancyGuard.set(true)
+                }
+
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    val resolveInfo = param.result as? ResolveInfo ?: return
-                    resolveInfo.activityInfo?.let { markActivityDistractionOptimized(it) }
+                    if (param.getObjectExtra(EXTRA_SKIP_NESTED) == true) return
+                    try {
+                        if (param.hasThrowable()) return
+                        val intent = param.args.firstOrNull() as? Intent
+                        if (!isCarRelatedIntent(intent)) return
+                        val resolveInfo = param.result as? ResolveInfo ?: return
+                        val actInfo = resolveInfo.activityInfo ?: return
+                        if (isSafeThirdPartyPackage(actInfo.packageName)) {
+                            markActivityDistractionOptimized(actInfo)
+                        }
+                    } finally {
+                        pmHookReentrancyGuard.set(false)
+                    }
                 }
             }
             XposedBridge.hookAllMethods(appPmClass, "resolveActivity", resolveHook)
             XposedBridge.hookAllMethods(appPmClass, "resolveActivityAsUser", resolveHook)
-
-            XposedBridge.hookAllMethods(
-                appPmClass,
-                "getApplicationInfo",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val appInfo = param.result as? ApplicationInfo ?: return
-                        markApplicationDistractionOptimized(appInfo)
-                    }
-                }
-            )
         } catch (t: Throwable) {
-            XposedBridge.log("[AAMaKer-Xposed] Lỗi hook ActivityInfo distractionOptimized: ${t.message}")
+            logInfo("Lỗi hook ActivityInfo distractionOptimized: ${t.message}")
         }
     }
 
     private fun markActivityDistractionOptimized(actInfo: ActivityInfo) {
         try {
-            val meta = actInfo.metaData ?: Bundle().also { actInfo.metaData = it }
-            meta.putBoolean("distractionOptimized", true)
-            meta.putBoolean("com.google.android.gms.car.distractionOptimized", true)
-            meta.putBoolean("com.android.automotive.distractionOptimized", true)
-            actInfo.applicationInfo?.let { markApplicationDistractionOptimized(it) }
-        } catch (_: Throwable) {
-        }
-    }
-
-    private fun markApplicationDistractionOptimized(appInfo: ApplicationInfo) {
-        try {
-            val meta = appInfo.metaData ?: Bundle().also { appInfo.metaData = it }
+            // Chỉ ghi đè nếu metaData đã được yêu cầu (hoặc khởi tạo Bundle nhẹ chỉ cho Activity, KHÔNG đụng vào ApplicationInfo chung)
+            val meta = actInfo.metaData ?: Bundle(3).also { actInfo.metaData = it }
             meta.putBoolean("distractionOptimized", true)
             meta.putBoolean("com.google.android.gms.car.distractionOptimized", true)
             meta.putBoolean("com.android.automotive.distractionOptimized", true)
@@ -171,8 +354,7 @@ class GearheadXposedHook : IXposedHookLoadPackage {
     }
 
     private fun hookCarDrivingRestrictionsAndSensors(
-        lpparam: XC_LoadPackage.LoadPackageParam,
-        isGearheadProcess: Boolean
+        lpparam: XC_LoadPackage.LoadPackageParam
     ) {
         val cl = lpparam.classLoader
 
@@ -225,31 +407,16 @@ class GearheadXposedHook : IXposedHookLoadPackage {
             }
         }
 
-        hookDynamicParcelableSensorEvents(cl)
-
-        if (isGearheadProcess) {
-            try {
-                XposedHelpers.findAndHookMethod(
-                    Location::class.java,
-                    "getSpeed",
-                    XC_MethodReplacement.returnConstant(0.0f)
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    XposedHelpers.findAndHookMethod(
-                        Location::class.java,
-                        "getSpeedAccuracyMetersPerSecond",
-                        XC_MethodReplacement.returnConstant(0.0f)
-                    )
-                }
-            } catch (t: Throwable) {
-                XposedBridge.log("[AAMaKer-Xposed] Lỗi hook Location.getSpeed trong Gearhead: ${t.message}")
-            }
-        }
+        // ĐÃ GỠ BỎ:
+        // 1. Parcel.readParcelable(...) -> Hook này chặn toàn bộ Binder IPC của GMS & Android Auto,
+        //    đồng thời gọi XposedBridge.hookMethod động giữa lúc giao dịch IPC làm treo cứng ART VM / ANR khi khởi động AA!
+        // 2. Location.getSpeed() -> Ghi đè tốc độ GPS toàn cục trong Gearhead làm hỏng điều hướng Google Maps và gây xung đột cảm biến.
     }
 
     private fun hookCarSensorEventClass(cls: Class<*>) {
         if (!hookedSensorClasses.add(cls.name)) return
         try {
+            // Chỉ hook constructor một lần khi tạo sự kiện cảm biến, không hook hàng loạt declaredMethods
             XposedBridge.hookAllConstructors(
                 cls,
                 object : XC_MethodHook() {
@@ -258,183 +425,129 @@ class GearheadXposedHook : IXposedHookLoadPackage {
                     }
                 }
             )
-            for (method in cls.declaredMethods) {
-                val returnType = method.returnType
-                if (returnType == Boolean::class.javaPrimitiveType ||
-                    returnType == Int::class.javaPrimitiveType ||
-                    returnType == Float::class.javaPrimitiveType ||
-                    returnType.name.contains("DrivingStatus") ||
-                    returnType.name.contains("Speed") ||
-                    returnType.name.contains("ParkingBrake")
-                ) {
-                    XposedBridge.hookMethod(
-                        method,
-                        object : XC_MethodHook() {
-                            override fun beforeHookedMethod(param: MethodHookParam) {
-                                sanitizeCarSensorEventObject(param.thisObject)
-                            }
-                        }
-                    )
-                }
-            }
-            XposedBridge.log("[AAMaKer-Xposed] Đã kích hoạt Driving Bypass trên class cảm biến: ${cls.name}")
+            logInfo("Đã kích hoạt Driving Bypass trên class cảm biến: ${cls.name}")
         } catch (t: Throwable) {
-            XposedBridge.log("[AAMaKer-Xposed] Lỗi hook class cảm biến ${cls.name}: ${t.message}")
+            logInfo("Lỗi hook class cảm biến ${cls.name}: ${t.message}")
         }
     }
 
-    private fun hookDynamicParcelableSensorEvents(cl: ClassLoader) {
-        try {
-            XposedHelpers.findAndHookMethod(
-                Parcel::class.java,
-                "readParcelable",
-                ClassLoader::class.java,
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val obj = param.result ?: return
-                        val pkg = obj.javaClass.name
-                        if (pkg.startsWith("com.google.android.gms.car") ||
-                            pkg.startsWith("com.google.android.projection") ||
-                            pkg.startsWith("com.google.android.apps.auto")
-                        ) {
-                            if (looksLikeCarSensorEvent(obj.javaClass)) {
-                                hookCarSensorEventClass(obj.javaClass)
-                                sanitizeCarSensorEventObject(obj)
-                            }
-                        }
-                    }
-                }
-            )
-        } catch (_: Throwable) {
-        }
-    }
+    private fun getOrBuildSensorFieldLayout(cls: Class<*>): SensorFieldLayout {
+        sensorFieldCache[cls]?.let { return it }
 
-    private fun looksLikeCarSensorEvent(cls: Class<*>): Boolean {
-        if (cls.simpleName.contains("CarSensorEvent", ignoreCase = true) ||
-            cls.simpleName.contains("DrivingStatus", ignoreCase = true)
-        ) {
-            return true
-        }
-        var hasFloatArray = false
-        var hasIntArray = false
-        var intFieldCount = 0
-        var longFieldCount = 0
+        var explicitSensorTypeField: Field? = null
+        val nonStaticIntFields = mutableListOf<Field>()
+        val intArrays = mutableListOf<Field>()
+        val floatArrays = mutableListOf<Field>()
+        val byteArrays = mutableListOf<Field>()
+
         for (field in cls.declaredFields) {
+            if (Modifier.isStatic(field.modifiers)) continue
             when (field.type) {
-                FloatArray::class.java -> hasFloatArray = true
-                IntArray::class.java -> hasIntArray = true
-                Int::class.javaPrimitiveType -> intFieldCount++
-                Long::class.javaPrimitiveType -> longFieldCount++
+                Int::class.javaPrimitiveType -> {
+                    if (field.name == "sensorType" || field.name == "mSensorType" || field.name == "type") {
+                        field.isAccessible = true
+                        explicitSensorTypeField = field
+                    }
+                    nonStaticIntFields.add(field)
+                }
+                IntArray::class.java -> {
+                    field.isAccessible = true
+                    intArrays.add(field)
+                }
+                FloatArray::class.java -> {
+                    field.isAccessible = true
+                    floatArrays.add(field)
+                }
+                ByteArray::class.java -> {
+                    field.isAccessible = true
+                    byteArrays.add(field)
+                }
             }
         }
-        return hasFloatArray && hasIntArray && intFieldCount >= 1 && longFieldCount >= 1
+
+        val resolvedSensorField = explicitSensorTypeField ?: when {
+            nonStaticIntFields.size == 1 -> nonStaticIntFields[0].apply { isAccessible = true }
+            nonStaticIntFields.size >= 2 -> {
+                val first = nonStaticIntFields[0]
+                val second = nonStaticIntFields[1]
+                (if (first.name == "a" && second.name == "b") second else first).apply { isAccessible = true }
+            }
+            else -> null
+        }
+
+        val layout = SensorFieldLayout(
+            sensorTypeField = resolvedSensorField,
+            intArrayFields = intArrays,
+            floatArrayFields = floatArrays,
+            byteArrayFields = byteArrays
+        )
+        sensorFieldCache[cls] = layout
+        return layout
     }
 
     private fun sanitizeCarSensorEventObject(eventObj: Any?) {
         if (eventObj == null) return
         try {
-            val cls = eventObj.javaClass
-            val sensorTypeField = findSensorTypeField(cls) ?: return
-            sensorTypeField.isAccessible = true
+            val layout = getOrBuildSensorFieldLayout(eventObj.javaClass)
+            val sensorTypeField = layout.sensorTypeField ?: return
             val sensorType = sensorTypeField.getInt(eventObj)
 
             when (sensorType) {
                 SENSOR_TYPE_DRIVING_STATUS -> {
-                    zeroOutIntArrayFields(cls, eventObj)
-                    zeroOutByteArrayFields(cls, eventObj)
+                    for (field in layout.intArrayFields) {
+                        val arr = field.get(eventObj) as? IntArray ?: continue
+                        for (i in arr.indices) arr[i] = 0
+                    }
+                    for (field in layout.byteArrayFields) {
+                        val arr = field.get(eventObj) as? ByteArray ?: continue
+                        for (i in arr.indices) arr[i] = 0
+                    }
                 }
                 SENSOR_TYPE_CAR_SPEED -> {
-                    zeroOutFloatArrayFields(cls, eventObj)
-                    zeroOutIntArrayFields(cls, eventObj)
+                    for (field in layout.floatArrayFields) {
+                        val arr = field.get(eventObj) as? FloatArray ?: continue
+                        for (i in arr.indices) arr[i] = 0.0f
+                    }
+                    for (field in layout.intArrayFields) {
+                        val arr = field.get(eventObj) as? IntArray ?: continue
+                        for (i in arr.indices) arr[i] = 0
+                    }
                 }
                 SENSOR_TYPE_PARKING_BRAKE -> {
-                    setFirstIntAndByteFieldToOne(cls, eventObj)
+                    for (field in layout.intArrayFields) {
+                        val arr = field.get(eventObj) as? IntArray ?: continue
+                        if (arr.isNotEmpty()) arr[0] = 1
+                    }
+                    for (field in layout.byteArrayFields) {
+                        val arr = field.get(eventObj) as? ByteArray ?: continue
+                        if (arr.isNotEmpty()) arr[0] = 1
+                    }
                 }
             }
         } catch (_: Throwable) {
         }
     }
 
-    private fun findSensorTypeField(cls: Class<*>): java.lang.reflect.Field? {
-
-        for (field in cls.declaredFields) {
-            if (field.type == Int::class.javaPrimitiveType &&
-                (field.name == "sensorType" || field.name == "mSensorType" || field.name == "type")
-            ) {
-                return field
-            }
-        }
-
-        val intFields = cls.declaredFields.filter {
-            it.type == Int::class.javaPrimitiveType &&
-                !java.lang.reflect.Modifier.isStatic(it.modifiers)
-        }
-        if (intFields.size == 1) return intFields[0]
-        if (intFields.size >= 2) {
-
-            val second = intFields[1]
-            val first = intFields[0]
-            return if (first.name == "a" && second.name == "b") second else first
-        }
-        return null
-    }
-
-    private fun zeroOutIntArrayFields(cls: Class<*>, instance: Any) {
-        for (field in cls.declaredFields) {
-            if (field.type == IntArray::class.java && !java.lang.reflect.Modifier.isStatic(field.modifiers)) {
-                field.isAccessible = true
-                val arr = field.get(instance) as? IntArray ?: continue
-                for (i in arr.indices) {
-                    arr[i] = 0
-                }
-            }
-        }
-    }
-
-    private fun zeroOutFloatArrayFields(cls: Class<*>, instance: Any) {
-        for (field in cls.declaredFields) {
-            if (field.type == FloatArray::class.java && !java.lang.reflect.Modifier.isStatic(field.modifiers)) {
-                field.isAccessible = true
-                val arr = field.get(instance) as? FloatArray ?: continue
-                for (i in arr.indices) {
-                    arr[i] = 0.0f
-                }
-            }
-        }
-    }
-
-    private fun zeroOutByteArrayFields(cls: Class<*>, instance: Any) {
-        for (field in cls.declaredFields) {
-            if (field.type == ByteArray::class.java && !java.lang.reflect.Modifier.isStatic(field.modifiers)) {
-                field.isAccessible = true
-                val arr = field.get(instance) as? ByteArray ?: continue
-                for (i in arr.indices) {
-                    arr[i] = 0
-                }
-            }
-        }
-    }
-
-    private fun setFirstIntAndByteFieldToOne(cls: Class<*>, instance: Any) {
-        for (field in cls.declaredFields) {
-            if (java.lang.reflect.Modifier.isStatic(field.modifiers)) continue
-            if (field.type == IntArray::class.java) {
-                field.isAccessible = true
-                val arr = field.get(instance) as? IntArray ?: continue
-                if (arr.isNotEmpty()) arr[0] = 1
-            } else if (field.type == ByteArray::class.java) {
-                field.isAccessible = true
-                val arr = field.get(instance) as? ByteArray ?: continue
-                if (arr.isNotEmpty()) arr[0] = 1
-            }
-        }
-    }
-
     companion object {
+        private const val LOG_TAG = "AAMaKer-Xposed"
+        private const val EXTRA_SKIP_NESTED = "aamaker_skip_nested"
         private const val AAMAKER_PACKAGE = "com.aamaker.app"
         private const val GEARHEAD_PACKAGE = "com.google.android.projection.gearhead"
         private const val GMS_PACKAGE = "com.google.android.gms"
         private const val VENDING_PACKAGE = "com.android.vending"
+
+        private val SYSTEM_EXCLUDED_PACKAGES = setOf(
+            "android",
+            "com.android.systemui",
+            "com.android.settings",
+            "com.android.vending",
+            "com.google.android.gms",
+            "com.google.android.gsf",
+            "com.google.android.projection.gearhead",
+            "com.google.android.apps.maps",
+            "com.google.android.googlequicksearchbox",
+            "com.google.android.tts"
+        )
 
         private const val SENSOR_TYPE_CAR_SPEED = 2
         private const val SENSOR_TYPE_PARKING_BRAKE = 6
