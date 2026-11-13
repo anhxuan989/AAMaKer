@@ -7,9 +7,11 @@
 ## 📱 Screenshots
 
 <p align="center">
-  <img src="screenshots/patch_and_install.jpg" alt="Patch & Install Screen" width="45%" />
+  <img src="screenshots/apps_list.jpg" alt="Apps List Screen" width="30%" />
   &nbsp;&nbsp;
-  <img src="screenshots/environment_status.jpg" alt="Environment Status Screen" width="45%" />
+  <img src="screenshots/patch_and_install.jpg" alt="Patch & Install Screen" width="30%" />
+  &nbsp;&nbsp;
+  <img src="screenshots/environment_status.jpg" alt="Environment Status Screen" width="30%" />
 </p>
 
 ---
