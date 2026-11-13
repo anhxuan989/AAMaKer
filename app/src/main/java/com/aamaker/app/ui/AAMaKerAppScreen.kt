@@ -1,22 +1,22 @@
 package com.aamaker.app.ui
 
 import android.content.Intent
-import android.graphics.RenderEffect as AndroidRenderEffect
-import android.graphics.RuntimeShader
-import android.graphics.Shader as AndroidShader
-import android.os.Build
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.util.LruCache
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -26,12 +26,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,31 +51,36 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Android
+import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -86,24 +90,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlurEffect
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TileMode
-import androidx.compose.ui.graphics.asComposeRenderEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.layer.GraphicsLayer
-import androidx.compose.ui.graphics.layer.drawLayer
-import androidx.compose.ui.graphics.rememberGraphicsLayer
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontFamily
@@ -111,7 +102,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -119,14 +109,196 @@ import com.aamaker.app.data.TargetAppCandidate
 import com.aamaker.app.i18n.AppLanguage
 import com.aamaker.app.i18n.AppStrings
 import com.aamaker.app.i18n.AppTranslations
-import com.aamaker.app.ui.theme.AppleGlass
 import com.aamaker.core.installer.model.EnvironmentStatus
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.patcher.model.CarAppCategory
 import com.aamaker.core.patcher.model.PatchStrategy
-import kotlin.math.abs
-import kotlin.math.max
-import kotlin.math.min
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipFile
+
+private object AppIconCache {
+    private val cache = LruCache<String, ImageBitmap>(180)
+    fun get(key: String): ImageBitmap? = cache.get(key)
+    fun put(key: String, bitmap: ImageBitmap) {
+        cache.put(key, bitmap)
+    }
+}
+
+private fun Drawable.toImageBitmap(targetPx: Int = 128): ImageBitmap {
+    if (this is BitmapDrawable && bitmap != null) {
+        return bitmap.asImageBitmap()
+    }
+    val w = intrinsicWidth.takeIf { it > 0 }?.coerceAtMost(targetPx) ?: targetPx
+    val h = intrinsicHeight.takeIf { it > 0 }?.coerceAtMost(targetPx) ?: targetPx
+    val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bmp)
+    setBounds(0, 0, canvas.width, canvas.height)
+    draw(canvas)
+    return bmp.asImageBitmap()
+}
+
+@Composable
+private fun AppCandidateIcon(
+    candidate: TargetAppCandidate,
+    size: Dp = 42.dp,
+    cornerRadius: Dp = 10.dp
+) {
+    val context = LocalContext.current
+    val cacheKey = remember(candidate.packageName, candidate.isFromExternalFile, candidate.apkFiles) {
+        val fileRef = candidate.apkFiles.firstOrNull()?.absolutePath ?: ""
+        "${candidate.packageName}:${candidate.isFromExternalFile}:$fileRef"
+    }
+
+    var iconBitmap by remember(cacheKey) {
+        mutableStateOf(AppIconCache.get(cacheKey))
+    }
+
+    LaunchedEffect(cacheKey) {
+        if (iconBitmap != null) return@LaunchedEffect
+        val loaded = withContext(Dispatchers.IO) {
+            val pm = context.packageManager
+            var drawable: Drawable? = null
+
+            if (!candidate.isFromExternalFile) {
+                drawable = try {
+                    pm.getApplicationIcon(candidate.packageName)
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+
+            if (drawable == null) {
+                val firstFile = candidate.apkFiles.firstOrNull()
+                if (firstFile != null && firstFile.exists()) {
+                    val archiveInfo = pm.getPackageArchiveInfo(
+                        firstFile.absolutePath,
+                        PackageManager.GET_META_DATA
+                    )
+                    if (archiveInfo?.applicationInfo != null) {
+                        val appInfo = archiveInfo.applicationInfo!!
+                        appInfo.sourceDir = firstFile.absolutePath
+                        appInfo.publicSourceDir = firstFile.absolutePath
+                        drawable = try {
+                            appInfo.loadIcon(pm)
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    } else {
+                        // Bundle (.apks / .xapk): extract base apk icon
+                        try {
+                            ZipFile(firstFile).use { zip ->
+                                val entries = zip.entries()
+                                var bestEntry: java.util.zip.ZipEntry? = null
+                                while (entries.hasMoreElements()) {
+                                    val entry = entries.nextElement()
+                                    if (!entry.isDirectory && entry.name.endsWith(".apk", ignoreCase = true)) {
+                                        val name = File(entry.name).name
+                                        if (name.equals("base.apk", ignoreCase = true) || name.contains("base", ignoreCase = true)) {
+                                            bestEntry = entry
+                                            break
+                                        }
+                                        if (bestEntry == null && !name.startsWith("split_config", ignoreCase = true)) {
+                                            bestEntry = entry
+                                        }
+                                    }
+                                }
+                                if (bestEntry != null) {
+                                    val tempApk = File(context.cacheDir, "icon_probe_${candidate.packageName.hashCode()}.apk")
+                                    try {
+                                        zip.getInputStream(bestEntry).use { zIn ->
+                                            FileOutputStream(tempApk).use { fOut -> zIn.copyTo(fOut) }
+                                        }
+                                        val bInfo = pm.getPackageArchiveInfo(tempApk.absolutePath, 0)
+                                        val bAppInfo = bInfo?.applicationInfo
+                                        if (bAppInfo != null) {
+                                            bAppInfo.sourceDir = tempApk.absolutePath
+                                            bAppInfo.publicSourceDir = tempApk.absolutePath
+                                            drawable = bAppInfo.loadIcon(pm)
+                                        }
+                                    } finally {
+                                        tempApk.delete()
+                                    }
+                                }
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            }
+
+            if (drawable == null) {
+                drawable = try {
+                    pm.getApplicationIcon(candidate.packageName)
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+
+            drawable?.toImageBitmap()?.also { AppIconCache.put(cacheKey, it) }
+        }
+        iconBitmap = loaded
+    }
+
+    val currentBitmap = iconBitmap
+    if (currentBitmap != null) {
+        Image(
+            bitmap = currentBitmap,
+            contentDescription = candidate.appName,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(size)
+                .clip(RoundedCornerShape(cornerRadius))
+        )
+    } else {
+        Surface(
+            shape = RoundedCornerShape(cornerRadius),
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            modifier = Modifier.size(size)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Outlined.Android,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(size * 0.56f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionGroup(
+    title: String? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        if (title != null) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
+            )
+        }
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                content = content
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -145,8 +317,7 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
     var showLanguageDialog by remember { mutableStateOf(false) }
     var pendingDirectInstallOnPick by remember { mutableStateOf(false) }
 
-    val contentGraphicsLayer = rememberGraphicsLayer()
-    var contentOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -171,77 +342,44 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
         }
 
         Scaffold(
-            containerColor = AppleGlass.PureBlack,
+            modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+            containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
+                    scrollBehavior = scrollBehavior,
                     title = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = Color(0x28FFFFFF),
-                                border = AppleGlass.SpecularBorder,
-                                modifier = Modifier.size(38.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.DirectionsCar,
-                                        contentDescription = null,
-                                        tint = AppleGlass.AppleBlue,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "AAMaKer",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = AppleGlass.TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = strings.appSubtitle,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = AppleGlass.TextSecondary
-                                )
-                            }
+                        Column {
+                            Text(
+                                text = "AAMaKer",
+                                style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = strings.appSubtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     },
                     actions = {
-                        Surface(
+                        TextButton(
                             onClick = { showLanguageDialog = true },
-                            shape = CircleShape,
-                            color = Color(0x1AFFFFFF),
-                            border = AppleGlass.ThinBorder,
-                            modifier = Modifier.padding(end = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Language,
-                                    contentDescription = strings.languageDialogTitle,
-                                    tint = AppleGlass.TextSecondary,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(5.dp))
-                                Text(
-                                    text = "${state.selectedLanguage.flagEmoji} ${state.selectedLanguage.code.uppercase()}",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppleGlass.TextPrimary,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = strings.languageDialogTitle,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = state.selectedLanguage.code.uppercase(),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                         IconButton(onClick = {
                             viewModel.refreshEnvironment()
@@ -249,74 +387,84 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                         }) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
-                                contentDescription = strings.refreshTooltip,
-                                tint = AppleGlass.TextPrimary
+                                contentDescription = strings.refreshTooltip
                             )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = AppleGlass.PureBlack.copy(alpha = 0.85f),
-                        scrolledContainerColor = AppleGlass.FrostedDark
+                        containerColor = MaterialTheme.colorScheme.background,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
                     )
                 )
             },
             bottomBar = {
-                AppleLiquidGlassBottomBar(
-                    currentTab = currentTab,
-                    onTabSelected = { currentTab = it },
-                    strings = strings,
-                    backdropLayer = contentGraphicsLayer,
-                    backdropOriginInRoot = contentOriginInRoot
-                )
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    tonalElevation = 0.dp
+                ) {
+                    NavigationBarItem(
+                        selected = currentTab == 0,
+                        onClick = { currentTab = 0 },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == 0) Icons.Default.DirectionsCar else Icons.Outlined.DirectionsCar,
+                                contentDescription = strings.navSelectApp
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = strings.navSelectApp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 1,
+                        onClick = { currentTab = 1 },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == 1) Icons.Default.Build else Icons.Outlined.Build,
+                                contentDescription = strings.navPatchInstall
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = strings.navPatchInstall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 2,
+                        onClick = { currentTab = 2 },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == 2) Icons.Default.Security else Icons.Outlined.Security,
+                                contentDescription = strings.navEnvironment
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = strings.navEnvironment,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                }
             }
         ) { innerPadding ->
-            val bottomPadding = innerPadding.calculateBottomPadding()
-
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = innerPadding.calculateTopPadding())
-                    .background(AppleGlass.PureBlack)
-                    .onGloballyPositioned { coords ->
-                        contentOriginInRoot = coords.positionInRoot()
-                    }
-                    .drawWithContent {
-                        contentGraphicsLayer.record {
-                            this@drawWithContent.drawContent()
-                        }
-                        drawLayer(contentGraphicsLayer)
-                    }
+                    .padding(innerPadding)
             ) {
-                // Ambient Liquid Glow refraction at top of OLED screen
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(260.dp)
-                        .background(AppleGlass.AmbientGlow)
-                )
-
-                // Subtle bottom ambient light pool so the Liquid Glass lens always has light to refract
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(140.dp)
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color.Transparent,
-                                    Color(0xFF0A84FF).copy(alpha = 0.07f),
-                                    Color(0xFF5E5CE6).copy(alpha = 0.05f)
-                                )
-                            )
-                        )
-                )
-
                 when (currentTab) {
                     0 -> AppSelectorTab(
                         state = state,
                         strings = strings,
-                        bottomPadding = bottomPadding,
                         onSearchChange = viewModel::updateSearchQuery,
                         onFilterAAChange = viewModel::toggleFilterOnlyAAApps,
                         onSystemAppsChange = viewModel::toggleIncludeSystemApps,
@@ -329,7 +477,7 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                         state = state,
                         strings = strings,
                         viewModel = viewModel,
-                        bottomPadding = bottomPadding,
+                        onNavigateToApps = { currentTab = 0 },
                         onPickExternalFile = {
                             pendingDirectInstallOnPick = false
                             filePickerLauncher.launch(arrayOf("*/*"))
@@ -340,412 +488,11 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                         }
                     )
                     2 -> EnvironmentDiagnosticTab(
-                        env = state. envStatus,
+                        env = state.envStatus,
                         strings = strings,
-                        bottomPadding = bottomPadding,
                         onRequestShizuku = viewModel::requestShizukuPermission,
                         onRefresh = viewModel::refreshEnvironment
                     )
-                }
-            }
-        }
-    }
-}
-
-private const val LIQUID_GLASS_AGSL_SHADER = """
-    uniform shader content;
-    uniform float2 resolution;
-    uniform float dropletLeft;
-    uniform float dropletRight;
-
-    half4 main(float2 fragCoord) {
-        float2 res = max(resolution, float2(1.0, 1.0));
-        float r = res.y * 0.5;
-        float halfW = max(res.x * 0.5 - r, 0.0);
-        float2 p = fragCoord - res * 0.5;
-
-        // Signed distance & normal from capsule spine
-        float spineX = clamp(p.x, -halfW, halfW);
-        float2 delta = p - float2(spineX, 0.0);
-        float dist = length(delta);
-        float normDist = clamp(dist / max(r, 1.0), 0.0, 1.0);
-        float2 dir = dist > 0.001 ? (delta / dist) : float2(0.0, 0.0);
-
-        // Curved 3D meniscus lens refraction at the outer capsule rim
-        float edgeBevel = smoothstep(0.48, 1.0, normDist);
-        float lensDisplacement = edgeBevel * edgeBevel * r * 0.46;
-
-        // Secondary moving liquid droplet lens magnification
-        float dropCenterX = (dropletLeft + dropletRight) * 0.5;
-        float dropHalfW = max((dropletRight - dropletLeft) * 0.5 - r * 0.72, 0.0);
-        float2 dp = fragCoord - float2(dropCenterX, res.y * 0.5);
-        float dSpineX = clamp(dp.x, -dropHalfW, dropHalfW);
-        float2 dDelta = dp - float2(dSpineX, 0.0);
-        float dDist = length(dDelta);
-        float dNorm = clamp(dDist / max(r * 0.84, 1.0), 0.0, 1.5);
-        float2 dDir = dDist > 0.001 ? (dDelta / dDist) : float2(0.0, 0.0);
-        float inDroplet = 1.0 - smoothstep(0.84, 1.04, dNorm);
-        float dropletBevel = smoothstep(0.38, 0.96, dNorm) * inDroplet;
-
-        float2 refractOffset = -dir * lensDisplacement - dDir * (dropletBevel * r * 0.26);
-
-        // Optical chromatic dispersion (RGB refraction splitting at glass bevel)
-        float dispersion = edgeBevel * 0.16 + dropletBevel * 0.12;
-        float2 uvR = clamp(fragCoord + refractOffset * (1.0 + dispersion), float2(0.0, 0.0), res);
-        float2 uvG = clamp(fragCoord + refractOffset, float2(0.0, 0.0), res);
-        float2 uvB = clamp(fragCoord + refractOffset * (1.0 - dispersion), float2(0.0, 0.0), res);
-
-        half4 colR = content.eval(uvR);
-        half4 colG = content.eval(uvG);
-        half4 colB = content.eval(uvB);
-        half4 color = half4(colR.r, colG.g, colB.b, 1.0);
-
-        // Apple Vibrancy saturation boost + meniscus caustic concentration
-        half luma = dot(color.rgb, half3(0.299, 0.587, 0.114));
-        color.rgb = mix(half3(luma, luma, luma), color.rgb, half(1.38));
-        float caustic = edgeBevel * edgeBevel * edgeBevel * 0.14 + dropletBevel * dropletBevel * 0.12;
-        color.rgb += half3(caustic, caustic, caustic);
-
-        return color;
-    }
-"""
-
-@Composable
-private fun AppleLiquidGlassBottomBar(
-    currentTab: Int,
-    onTabSelected: (Int) -> Unit,
-    strings: AppStrings,
-    backdropLayer: GraphicsLayer,
-    backdropOriginInRoot: Offset,
-    modifier: Modifier = Modifier
-) {
-    val tabs = remember(strings) {
-        listOf(
-            Triple(0, Icons.Default.DirectionsCar, strings.navSelectApp),
-            Triple(1, Icons.Default.Build, strings.navPatchInstall),
-            Triple(2, Icons.Default.Security, strings.navEnvironment)
-        )
-    }
-
-    var barOriginInRoot by remember { mutableStateOf(Offset.Zero) }
-    var barSize by remember { mutableStateOf(IntSize.Zero) }
-
-    // Dual-spring fluid physics for the sliding Liquid Glass droplet indicator:
-    // Fast leading spring + slightly lagging trailing spring creates authentic liquid stretch & bounce
-    val targetTabFloat = currentTab.toFloat()
-    val fastSpringPos by animateFloatAsState(
-        targetValue = targetTabFloat,
-        animationSpec = spring(
-            dampingRatio = 0.72f,
-            stiffness = 410f
-        ),
-        label = "liquidLeadPos"
-    )
-    val slowSpringPos by animateFloatAsState(
-        targetValue = targetTabFloat,
-        animationSpec = spring(
-            dampingRatio = 0.64f,
-            stiffness = 185f
-        ),
-        label = "liquidTrailPos"
-    )
-
-    val dropletStartSlot = min(fastSpringPos, slowSpringPos)
-    val dropletEndSlot = max(fastSpringPos, slowSpringPos)
-    val liquidStretch = abs(fastSpringPos - slowSpringPos)
-
-    val runtimeShader = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                RuntimeShader(LIQUID_GLASS_AGSL_SHADER)
-            } catch (_: Throwable) {
-                null
-            }
-        } else {
-            null
-        }
-    }
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(
-            modifier = Modifier
-                .height(68.dp)
-                .fillMaxWidth()
-                .onGloballyPositioned { coords ->
-                    barOriginInRoot = coords.positionInRoot()
-                    barSize = coords.size
-                }
-                // Soft optical elevation shadow beneath the floating glass capsule
-                .drawBehind {
-                    val cornerRadius = size.height / 2f
-                    drawRoundRect(
-                        color = Color.Black.copy(alpha = 0.62f),
-                        topLeft = Offset(0f, 8.dp.toPx()),
-                        size = Size(size.width, size.height),
-                        cornerRadius = CornerRadius(cornerRadius, cornerRadius)
-                    )
-                    drawRoundRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                AppleGlass.AppleBlue.copy(alpha = 0.14f),
-                                Color.Transparent
-                            ),
-                            center = Offset(
-                                x = size.width * ((dropletStartSlot + dropletEndSlot + 1f) / (tabs.size * 2f)),
-                                y = size.height * 0.65f
-                            ),
-                            radius = size.width * 0.45f
-                        ),
-                        topLeft = Offset(0f, 4.dp.toPx()),
-                        size = Size(size.width, size.height),
-                        cornerRadius = CornerRadius(cornerRadius, cornerRadius)
-                    )
-                }
-                .clip(CircleShape)
-        ) {
-            // LAYER 1: Live Refracted & Blurred Backdrop (iOS 26 Lensing Material)
-            val horizontalPadPx = 6.dp
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .graphicsLayer {
-                        val w = barSize.width.toFloat().coerceAtLeast(1f)
-                        val h = barSize.height.toFloat().coerceAtLeast(1f)
-                        val innerPad = horizontalPadPx.toPx()
-                        val slotW = (w - innerPad * 2f) / tabs.size.toFloat()
-                        val dLeft = innerPad + dropletStartSlot * slotW
-                        val dRight = innerPad + (dropletEndSlot + 1f) * slotW
-
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && runtimeShader != null) {
-                            try {
-                                runtimeShader.setFloatUniform("resolution", w, h)
-                                runtimeShader.setFloatUniform("dropletLeft", dLeft)
-                                runtimeShader.setFloatUniform("dropletRight", dRight)
-                                val shaderEffect = AndroidRenderEffect.createRuntimeShaderEffect(
-                                    runtimeShader,
-                                    "content"
-                                )
-                                val blurEffect = AndroidRenderEffect.createBlurEffect(
-                                    32f,
-                                    32f,
-                                    AndroidShader.TileMode.CLAMP
-                                )
-                                renderEffect = AndroidRenderEffect
-                                    .createChainEffect(shaderEffect, blurEffect)
-                                    .asComposeRenderEffect()
-                            } catch (_: Throwable) {
-                                renderEffect = BlurEffect(32f, 32f, TileMode.Clamp)
-                            }
-                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            renderEffect = BlurEffect(32f, 32f, TileMode.Clamp)
-                        }
-                    }
-                    .drawBehind {
-                        drawRect(AppleGlass.PureBlack)
-                        val dx = backdropOriginInRoot.x - barOriginInRoot.x
-                        val dy = backdropOriginInRoot.y - barOriginInRoot.y
-                        translate(left = dx, top = dy) {
-                            drawLayer(backdropLayer)
-                        }
-                    }
-            )
-
-            // LAYER 2: 3D Curved Liquid Glass Meniscus, Fresnel Rim & Morphing Active Droplet
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .drawBehind {
-                        val w = size.width
-                        val h = size.height
-                        val r = h / 2f
-
-                        // 2a. Translucent Liquid Glass body tint (keeps background refraction visible)
-                        drawRoundRect(
-                            color = Color(0x5414141C),
-                            cornerRadius = CornerRadius(r, r)
-                        )
-
-                        // 2b. Top convex meniscus specular dome reflection
-                        drawRoundRect(
-                            brush = Brush.verticalGradient(
-                                0.0f to Color(0x3BFFFFFF),
-                                0.28f to Color(0x12FFFFFF),
-                                0.55f to Color.Transparent,
-                                0.85f to Color(0x08FFFFFF),
-                                1.0f to Color(0x22FFFFFF)
-                            ),
-                            cornerRadius = CornerRadius(r, r)
-                        )
-
-                        // 2c. Sliding & Elastically Morphing Liquid Droplet Pill (Active Tab Indicator)
-                        val padX = 6.dp.toPx()
-                        val padY = 6.dp.toPx()
-                        val slotWidth = (w - padX * 2f) / tabs.size.toFloat()
-
-                        val rawLeft = padX + dropletStartSlot * slotWidth
-                        val rawRight = padX + (dropletEndSlot + 1f) * slotWidth
-                        val pillWidth = (rawRight - rawLeft).coerceAtLeast(slotWidth * 0.5f)
-
-                        // Conservation of liquid volume: slightly pinch vertical height when stretching mid-flight
-                        val pinchFactor = (1f - (liquidStretch * 0.09f).coerceAtMost(0.15f))
-                        val basePillHeight = h - padY * 2f
-                        val pillHeight = basePillHeight * pinchFactor
-                        val pillTop = (h - pillHeight) / 2f
-                        val pillRadius = pillHeight / 2f
-
-                        // Droplet internal ambient glow
-                        drawRoundRect(
-                            brush = Brush.radialGradient(
-                                colors = listOf(
-                                    Color(0x450A84FF),
-                                    Color(0x180A84FF),
-                                    Color.Transparent
-                                ),
-                                center = Offset((rawLeft + rawRight) * 0.5f, h * 0.5f),
-                                radius = pillWidth * 0.72f
-                            ),
-                            topLeft = Offset(rawLeft, pillTop),
-                            size = Size(pillWidth, pillHeight),
-                            cornerRadius = CornerRadius(pillRadius, pillRadius)
-                        )
-
-                        // Droplet 3D convex liquid lens body
-                        drawRoundRect(
-                            brush = Brush.verticalGradient(
-                                0.0f to Color(0x42FFFFFF),
-                                0.35f to Color(0x1EFFFFFF),
-                                0.70f to Color(0x14FFFFFF),
-                                1.0f to Color(0x2E82C2FF),
-                                startY = pillTop,
-                                endY = pillTop + pillHeight
-                            ),
-                            topLeft = Offset(rawLeft, pillTop),
-                            size = Size(pillWidth, pillHeight),
-                            cornerRadius = CornerRadius(pillRadius, pillRadius)
-                        )
-
-                        // Droplet diagonal Fresnel specular rim (top-left bright, mid soft, bottom-right caustic)
-                        val dropletStroke = 1.15.dp.toPx()
-                        drawRoundRect(
-                            brush = Brush.linearGradient(
-                                0.0f to Color(0xCCFFFFFF),
-                                0.35f to Color(0x38FFFFFF),
-                                0.65f to Color(0x220A84FF),
-                                1.0f to Color(0x9982C2FF),
-                                start = Offset(rawLeft, pillTop),
-                                end = Offset(rawRight, pillTop + pillHeight)
-                            ),
-                            topLeft = Offset(rawLeft + dropletStroke / 2f, pillTop + dropletStroke / 2f),
-                            size = Size(pillWidth - dropletStroke, pillHeight - dropletStroke),
-                            cornerRadius = CornerRadius(pillRadius, pillRadius),
-                            style = Stroke(width = dropletStroke)
-                        )
-
-                        // 2d. Outer Capsule Inner Meniscus Thickness Ring (1.5dp inset bevel)
-                        val innerInset = 1.6.dp.toPx()
-                        drawRoundRect(
-                            brush = Brush.verticalGradient(
-                                0.0f to Color(0x28FFFFFF),
-                                0.5f to Color(0x08000000),
-                                1.0f to Color(0x1EFFFFFF)
-                            ),
-                            topLeft = Offset(innerInset, innerInset),
-                            size = Size(w - innerInset * 2f, h - innerInset * 2f),
-                            cornerRadius = CornerRadius(r - innerInset, r - innerInset),
-                            style = Stroke(width = 1.dp.toPx())
-                        )
-
-                        // 2e. Outer Capsule 135° Fresnel Specular Rim Highlight
-                        val outerStroke = 1.25.dp.toPx()
-                        drawRoundRect(
-                            brush = Brush.linearGradient(
-                                0.0f to Color(0xD9FFFFFF),
-                                0.25f to Color(0x55FFFFFF),
-                                0.50f to Color(0x18FFFFFF),
-                                0.78f to Color(0x38FFFFFF),
-                                1.0f to Color(0x88FFFFFF),
-                                start = Offset(0f, 0f),
-                                end = Offset(w, h)
-                            ),
-                            topLeft = Offset(outerStroke / 2f, outerStroke / 2f),
-                            size = Size(w - outerStroke, h - outerStroke),
-                            cornerRadius = CornerRadius(r, r),
-                            style = Stroke(width = outerStroke)
-                        )
-                    }
-            )
-
-            // LAYER 3: Interactive Tab Items with Spring Scale Physics
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = horizontalPadPx, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                tabs.forEach { (index, icon, label) ->
-                    val isSelected = currentTab == index
-                    val interactionSource = remember { MutableInteractionSource() }
-                    val isPressed by interactionSource.collectIsPressedAsState()
-
-                    val itemScale by animateFloatAsState(
-                        targetValue = when {
-                            isPressed -> 0.90f
-                            isSelected -> 1.05f
-                            else -> 0.98f
-                        },
-                        animationSpec = spring(
-                            dampingRatio = 0.62f,
-                            stiffness = 480f
-                        ),
-                        label = "tabScale_$index"
-                    )
-
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp)
-                            .clip(CircleShape)
-                            .clickable(
-                                interactionSource = interactionSource,
-                                indication = null,
-                                onClick = { onTabSelected(index) }
-                            )
-                            .graphicsLayer {
-                                scaleX = itemScale
-                                scaleY = itemScale
-                            }
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = label,
-                                tint = if (isSelected) Color.White else AppleGlass.TextSecondary,
-                                modifier = Modifier.size(21.dp)
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                color = if (isSelected) Color.White else AppleGlass.TextTertiary,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
                 }
             }
         }
@@ -761,94 +508,63 @@ private fun LanguagePickerDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(26.dp),
-        containerColor = Color(0xFF141419),
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    shape = CircleShape,
-                    color = AppleGlass.AppleBlue.copy(alpha = 0.20f),
-                    modifier = Modifier.size(34.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Language,
-                            contentDescription = null,
-                            tint = AppleGlass.AppleBlue,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = strings.languageDialogTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = AppleGlass.TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Text(
+                text = strings.languageDialogTitle,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
         },
         text = {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .heightIn(max = 400.dp)
             ) {
-                items(AppLanguage.entries, key = { it.code }) { lang ->
+                itemsIndexed(AppLanguage.entries, key = { _, lang -> lang.code }) { index, lang ->
                     val isSelected = lang == currentLanguage
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (isSelected) AppleGlass.AppleBlue.copy(alpha = 0.18f) else Color(0x14FFFFFF),
-                        border = if (isSelected) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(MaterialTheme.shapes.small)
                             .clickable { onSelectLanguage(lang) }
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(text = lang.flagEmoji, fontSize = 24.sp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = lang.nativeName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = AppleGlass.TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = "${lang.englishName} (${lang.code.uppercase()})",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = AppleGlass.TextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            RadioButton(
-                                selected = isSelected,
-                                onClick = { onSelectLanguage(lang) },
-                                colors = RadioButtonDefaults.colors(
-                                    selectedColor = AppleGlass.AppleBlue,
-                                    unselectedColor = AppleGlass.TextTertiary
-                                )
+                        RadioButton(
+                            selected = isSelected,
+                            onClick = null
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = lang.nativeName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${lang.englishName} (${lang.code.uppercase()})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        Text(
+                            text = lang.flagEmoji,
+                            fontSize = 18.sp
+                        )
+                    }
+                    if (index < AppLanguage.entries.lastIndex) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                        )
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text(strings.closeButton, color = AppleGlass.AppleBlue, fontWeight = FontWeight.SemiBold)
+                Text(strings.closeButton)
             }
         }
     )
@@ -859,7 +575,6 @@ private fun LanguagePickerDialog(
 private fun AppSelectorTab(
     state: MainUiState,
     strings: AppStrings,
-    bottomPadding: Dp = 16.dp,
     onSearchChange: (String) -> Unit,
     onFilterAAChange: (Boolean) -> Unit,
     onSystemAppsChange: (Boolean) -> Unit,
@@ -878,45 +593,34 @@ private fun AppSelectorTab(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 16.dp)
     ) {
-        // Apple iOS Style Frosted Capsule Search Bar
+        Spacer(modifier = Modifier.height(8.dp))
+
         OutlinedTextField(
             value = state.searchQuery,
             onValueChange = onSearchChange,
             modifier = Modifier.fillMaxWidth(),
-            shape = CircleShape,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = Color(0x22FFFFFF),
-                unfocusedContainerColor = Color(0x14FFFFFF),
-                focusedBorderColor = AppleGlass.AppleBlue,
-                unfocusedBorderColor = Color(0x28FFFFFF),
-                focusedTextColor = AppleGlass.TextPrimary,
-                unfocusedTextColor = AppleGlass.TextPrimary,
-                cursorColor = AppleGlass.AppleBlue
-            ),
+            shape = MaterialTheme.shapes.medium,
             placeholder = {
                 Text(
                     text = strings.searchPlaceholder,
-                    color = AppleGlass.TextTertiary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             },
             leadingIcon = {
                 Icon(
-                    Icons.Default.Search,
-                    contentDescription = null,
-                    tint = AppleGlass.TextSecondary
+                    imageVector = Icons.Default.Search,
+                    contentDescription = null
                 )
             },
             trailingIcon = {
                 if (state.searchQuery.isNotEmpty()) {
                     IconButton(onClick = { onSearchChange("") }) {
                         Icon(
-                            Icons.Default.Clear,
-                            contentDescription = strings.clearSearch,
-                            tint = AppleGlass.TextSecondary
+                            imageVector = Icons.Default.Clear,
+                            contentDescription = strings.clearSearch
                         )
                     }
                 }
@@ -924,32 +628,20 @@ private fun AppSelectorTab(
             singleLine = true
         )
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Apple Liquid Glass Capsules
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             FilterChip(
                 selected = state.filterOnlyAAApps,
                 onClick = { onFilterAAChange(!state.filterOnlyAAApps) },
-                shape = CircleShape,
-                border = if (state.filterOnlyAAApps) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                    selectedLabelColor = AppleGlass.AppleBlue,
-                    containerColor = Color(0x14FFFFFF),
-                    labelColor = AppleGlass.TextSecondary
-                ),
                 label = {
                     Text(
                         text = strings.filterExistingAAChip,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = if (state.filterOnlyAAApps) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -957,43 +649,42 @@ private fun AppSelectorTab(
             FilterChip(
                 selected = state.includeSystemApps,
                 onClick = { onSystemAppsChange(!state.includeSystemApps) },
-                shape = CircleShape,
-                border = if (state.includeSystemApps) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                    selectedLabelColor = AppleGlass.AppleBlue,
-                    containerColor = Color(0x14FFFFFF),
-                    labelColor = AppleGlass.TextSecondary
-                ),
                 label = {
                     Text(
                         text = strings.filterSystemAppsChip,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = if (state.includeSystemApps) FontWeight.SemiBold else FontWeight.Normal,
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         if (state.isLoadingApps) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = AppleGlass.AppleBlue)
+                CircularProgressIndicator()
             }
         } else {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp),
+                contentPadding = PaddingValues(bottom = 16.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(filteredApps, key = { it.packageName }) { candidate ->
-                    CandidateAppItem(
+                itemsIndexed(filteredApps, key = { _, item -> item.packageName }) { index, candidate ->
+                    val isFirst = index == 0
+                    val isLast = index == filteredApps.lastIndex
+                    val itemShape = when {
+                        isFirst && isLast -> RoundedCornerShape(16.dp)
+                        isFirst -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+                        isLast -> RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+                        else -> RoundedCornerShape(0.dp)
+                    }
+
+                    CandidateAppRow(
                         candidate = candidate,
                         strings = strings,
+                        shape = itemShape,
+                        showDivider = !isLast,
                         onClick = { onSelectCandidate(candidate) }
                     )
                 }
@@ -1004,243 +695,229 @@ private fun AppSelectorTab(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CandidateAppItem(
+private fun CandidateAppRow(
     candidate: TargetAppCandidate,
     strings: AppStrings,
+    shape: RoundedCornerShape,
+    showDivider: Boolean,
     onClick: () -> Unit
 ) {
     val isPlaySource = candidate.currentInstallerSource == "com.android.vending"
+
     Surface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = AppleGlass.GlassCard,
-        border = AppleGlass.SpecularBorder
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
+                AppCandidateIcon(
+                    candidate = candidate,
+                    size = 44.dp,
+                    cornerRadius = 10.dp
+                )
+
+                Spacer(modifier = Modifier.width(14.dp))
+
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = candidate.appName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AppleGlass.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = candidate.appName,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (candidate.apkFiles.size > 1) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            TagPill(
+                                text = strings.splitsBadgeFormat(candidate.apkFiles.size),
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(2.dp))
+
                     Text(
                         text = "${candidate.packageName} • v${candidate.versionName}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = AppleGlass.TextSecondary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                }
 
-                if (candidate.apkFiles.size > 1) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Surface(
-                        shape = CircleShape,
-                        color = Color(0x1EFFFFFF),
-                        border = AppleGlass.ThinBorder
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            text = strings.splitsBadgeFormat(candidate.apkFiles.size),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AppleGlass.TextPrimary,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        if (candidate.hasExistingCarMeta) {
+                            TagPill(
+                                text = strings.badgeExistingAA,
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        } else {
+                            TagPill(
+                                text = strings.badgeNeedInjectAA,
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        TagPill(
+                            text = if (isPlaySource) {
+                                strings.badgeSourcePlayStore
+                            } else {
+                                "${strings.badgeSourceOtherPrefix}${candidate.currentInstallerSource ?: strings.badgeSourceSideload}"
+                            },
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
             }
 
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = if (candidate.hasExistingCarMeta) {
-                        AppleGlass.AppleGreenGlass
-                    } else {
-                        Color(0x14FFFFFF)
-                    },
-                    border = if (candidate.hasExistingCarMeta) {
-                        AppleGlass.GreenBorder
-                    } else {
-                        AppleGlass.ThinBorder
-                    }
-                ) {
-                    Text(
-                        text = if (candidate.hasExistingCarMeta) strings.badgeExistingAA else strings.badgeNeedInjectAA,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (candidate.hasExistingCarMeta) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (candidate.hasExistingCarMeta) {
-                            AppleGlass.AppleGreen
-                        } else {
-                            AppleGlass.TextSecondary
-                        },
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
-                }
-
-                Surface(
-                    shape = CircleShape,
-                    color = Color(0x14FFFFFF),
-                    border = AppleGlass.ThinBorder
-                ) {
-                    Text(
-                        text = if (isPlaySource) {
-                            strings.badgeSourcePlayStore
-                        } else {
-                            "${strings.badgeSourceOtherPrefix}${candidate.currentInstallerSource ?: strings.badgeSourceSideload}"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = AppleGlass.TextSecondary,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
-                }
+            if (showDivider) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(start = 74.dp, end = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ImportApkHeroCard(
+private fun TagPill(
+    text: String,
+    containerColor: Color,
+    contentColor: Color
+) {
+    Surface(
+        shape = MaterialTheme.shapes.extraSmall,
+        color = containerColor
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = contentColor,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun ImportApkSection(
     strings: AppStrings,
     onPickExternalFile: () -> Unit,
     onPickExternalFileDirectInstall: () -> Unit
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        color = AppleGlass.GlassCard,
-        border = AppleGlass.SpecularBorder
-    ) {
+    SectionGroup {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.Top,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                    border = BorderStroke(1.dp, AppleGlass.AppleBlue.copy(alpha = 0.5f)),
-                    modifier = Modifier.size(44.dp)
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.size(40.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = Icons.Default.FolderOpen,
                             contentDescription = null,
-                            tint = AppleGlass.AppleBlue,
-                            modifier = Modifier.size(24.dp)
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(14.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = strings.bannerExternalTitle,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = AppleGlass.TextPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(3.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = strings.bannerExternalSubtitle,
                         style = MaterialTheme.typography.bodySmall,
-                        color = AppleGlass.TextSecondary,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Button(
+                FilledTonalButton(
                     onClick = onPickExternalFile,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AppleGlass.AppleBlue,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(vertical = 12.dp, horizontal = 16.dp)
+                    modifier = Modifier.weight(1f),
+                    shape = MaterialTheme.shapes.medium,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.FolderOpen,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.chooseFileButton,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Surface(
+                OutlinedButton(
                     onClick = onPickExternalFileDirectInstall,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0x1FFFFFFF),
-                    border = AppleGlass.ThinBorder
+                    modifier = Modifier.weight(1f),
+                    shape = MaterialTheme.shapes.medium,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp, horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = null,
-                            tint = AppleGlass.AppleBlue,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = strings.chooseFileDirectInstallButton,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppleGlass.TextPrimary,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = strings.chooseFileDirectInstallButton,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -1253,7 +930,7 @@ private fun PatchAndInstallTab(
     state: MainUiState,
     strings: AppStrings,
     viewModel: MainViewModel,
-    bottomPadding: Dp = 16.dp,
+    onNavigateToApps: () -> Unit,
     onPickExternalFile: () -> Unit,
     onPickExternalFileDirectInstall: () -> Unit
 ) {
@@ -1271,50 +948,42 @@ private fun PatchAndInstallTab(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding + 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            ImportApkHeroCard(
+            ImportApkSection(
                 strings = strings,
                 onPickExternalFile = onPickExternalFile,
                 onPickExternalFileDirectInstall = onPickExternalFileDirectInstall
             )
 
-            Surface(
-                shape = RoundedCornerShape(26.dp),
-                color = AppleGlass.GlassCard,
-                border = AppleGlass.SpecularBorder,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            SectionGroup {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(32.dp)
+                        .padding(horizontal = 24.dp, vertical = 32.dp)
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = AppleGlass.AppleBlue.copy(alpha = 0.20f),
-                        border = BorderStroke(1.dp, AppleGlass.AppleBlue.copy(alpha = 0.5f)),
-                        modifier = Modifier.size(68.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Build,
-                                contentDescription = null,
-                                modifier = Modifier.size(34.dp),
-                                tint = AppleGlass.AppleBlue
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Icon(
+                        imageVector = Icons.Outlined.DirectionsCar,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = strings.emptySelectionTitle,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = AppleGlass.TextPrimary,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedButton(
+                        onClick = onNavigateToApps,
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Text(text = strings.backToAppListButton)
+                    }
                 }
             }
         }
@@ -1325,50 +994,35 @@ private fun PatchAndInstallTab(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding + 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        ImportApkHeroCard(
+        ImportApkSection(
             strings = strings,
             onPickExternalFile = onPickExternalFile,
             onPickExternalFileDirectInstall = onPickExternalFileDirectInstall
         )
 
-        // Target app header card
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = AppleGlass.GlassCard,
-            border = AppleGlass.SpecularBorder,
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        // Selected App Card with real App Icon
+        SectionGroup {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                    border = BorderStroke(1.dp, AppleGlass.AppleBlue.copy(alpha = 0.5f)),
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.DirectionsCar,
-                            contentDescription = null,
-                            tint = AppleGlass.AppleBlue,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
+                AppCandidateIcon(
+                    candidate = candidate,
+                    size = 48.dp,
+                    cornerRadius = 12.dp
+                )
                 Spacer(modifier = Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "${strings.targetLabelPrefix}${candidate.appName}",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = AppleGlass.TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1376,7 +1030,7 @@ private fun PatchAndInstallTab(
                     Text(
                         text = strings.originalPackageFormat(candidate.packageName, candidate.apkFiles.size),
                         style = MaterialTheme.typography.bodySmall,
-                        color = AppleGlass.TextSecondary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1384,96 +1038,83 @@ private fun PatchAndInstallTab(
             }
         }
 
-        // Section 1: Patch Strategy
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = AppleGlass.GlassCard,
-            border = AppleGlass.SpecularBorder,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = strings.section1PatchStrategyTitle,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = AppleGlass.AppleBlue
-                )
-
-                PatchStrategy.entries.forEach { strategy ->
-                    val selected = state.selectedStrategy == strategy
-                    Surface(
-                        onClick = { viewModel.updateStrategy(strategy) },
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (selected) AppleGlass.AppleBlue.copy(alpha = 0.16f) else Color(0x10FFFFFF),
-                        border = if (selected) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            RadioButton(
-                                selected = selected,
-                                onClick = null,
-                                colors = RadioButtonDefaults.colors(
-                                    selectedColor = AppleGlass.AppleBlue,
-                                    unselectedColor = AppleGlass.TextTertiary
-                                )
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = strings.strategyTitle(strategy),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppleGlass.TextPrimary
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = strings.strategyDescription(strategy),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = AppleGlass.TextSecondary
-                                )
+        // Section 1: Patch Strategy (Grouped Seamless List)
+        SectionGroup(title = strings.section1PatchStrategyTitle) {
+            val strategies = PatchStrategy.entries
+            strategies.forEachIndexed { index, strategy ->
+                val selected = state.selectedStrategy == strategy
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.updateStrategy(strategy) }
+                        .background(
+                            if (selected) {
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+                            } else {
+                                Color.Transparent
                             }
-                        }
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    RadioButton(
+                        selected = selected,
+                        onClick = null,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.strategyTitle(strategy),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = strings.strategyDescription(strategy),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
+                if (index < strategies.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 52.dp, end = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                    )
+                }
+            }
 
-                if (state.selectedStrategy != PatchStrategy.DIRECT_INSTALL_NO_PATCH) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = Color(0x20FFFFFF))
+            if (state.selectedStrategy != PatchStrategy.DIRECT_INSTALL_NO_PATCH) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                )
 
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     OutlinedTextField(
                         value = state.customPackageName,
                         onValueChange = viewModel::updateCustomPackageName,
                         label = {
                             Text(
                                 text = strings.outputPackageLabel,
-                                color = AppleGlass.TextSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color(0x22FFFFFF),
-                            unfocusedContainerColor = Color(0x14FFFFFF),
-                            focusedBorderColor = AppleGlass.AppleBlue,
-                            unfocusedBorderColor = Color(0x28FFFFFF),
-                            focusedTextColor = AppleGlass.TextPrimary,
-                            unfocusedTextColor = AppleGlass.TextPrimary,
-                            cursorColor = AppleGlass.AppleBlue
-                        ),
+                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth(),
                         trailingIcon = {
                             IconButton(onClick = viewModel::randomizePackageNameSuffix) {
-                                Icon(Icons.Default.Shuffle, contentDescription = strings.randomizeTooltip, tint = AppleGlass.AppleBlue)
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = strings.randomizeTooltip
+                                )
                             }
                         },
                         singleLine = true
@@ -1485,21 +1126,11 @@ private fun PatchAndInstallTab(
                         label = {
                             Text(
                                 text = strings.carDisplayNameLabel,
-                                color = AppleGlass.TextSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                         },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color(0x22FFFFFF),
-                            unfocusedContainerColor = Color(0x14FFFFFF),
-                            focusedBorderColor = AppleGlass.AppleBlue,
-                            unfocusedBorderColor = Color(0x28FFFFFF),
-                            focusedTextColor = AppleGlass.TextPrimary,
-                            unfocusedTextColor = AppleGlass.TextPrimary,
-                            cursorColor = AppleGlass.AppleBlue
-                        ),
+                        shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -1508,12 +1139,12 @@ private fun PatchAndInstallTab(
                         Text(
                             text = strings.automotiveDescConfigLabel,
                             style = MaterialTheme.typography.labelMedium,
-                            color = AppleGlass.TextSecondary
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
 
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             FilterChip(
@@ -1521,19 +1152,10 @@ private fun PatchAndInstallTab(
                                 onClick = {
                                     viewModel.updateUsesFlags(!state.injectProjection, state.injectTemplate, state.injectMedia)
                                 },
-                                shape = CircleShape,
-                                border = if (state.injectProjection) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                                    selectedLabelColor = AppleGlass.AppleBlue,
-                                    containerColor = Color(0x14FFFFFF),
-                                    labelColor = AppleGlass.TextSecondary
-                                ),
                                 label = {
                                     Text(
                                         text = strings.projectionFullScreenLabel,
                                         maxLines = 1,
-                                        softWrap = false,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
@@ -1543,19 +1165,10 @@ private fun PatchAndInstallTab(
                                 onClick = {
                                     viewModel.updateUsesFlags(state.injectProjection, !state.injectTemplate, state.injectMedia)
                                 },
-                                shape = CircleShape,
-                                border = if (state.injectTemplate) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                                    selectedLabelColor = AppleGlass.AppleBlue,
-                                    containerColor = Color(0x14FFFFFF),
-                                    labelColor = AppleGlass.TextSecondary
-                                ),
                                 label = {
                                     Text(
                                         text = strings.carTemplatesLabel,
                                         maxLines = 1,
-                                        softWrap = false,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
@@ -1566,12 +1179,12 @@ private fun PatchAndInstallTab(
                     Text(
                         text = strings.compatOptionsHeaderLabel,
                         style = MaterialTheme.typography.labelMedium,
-                        color = AppleGlass.TextSecondary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         FilterChip(
@@ -1580,19 +1193,10 @@ private fun PatchAndInstallTab(
                             onClick = {
                                 viewModel.updateCompatFlags(parkedGameManifest = !state.injectParkedGameManifest)
                             },
-                            shape = CircleShape,
-                            border = if (state.selectedStrategy == PatchStrategy.PARKED_APP_MODE || state.injectParkedGameManifest) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                                selectedLabelColor = AppleGlass.AppleBlue,
-                                containerColor = Color(0x14FFFFFF),
-                                labelColor = AppleGlass.TextSecondary
-                            ),
                             label = {
                                 Text(
                                     text = strings.parkedGameManifestChip,
                                     maxLines = 1,
-                                    softWrap = false,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -1602,19 +1206,10 @@ private fun PatchAndInstallTab(
                             onClick = {
                                 viewModel.updateCompatFlags(bypassDriving = !state.bypassDrivingRestriction)
                             },
-                            shape = CircleShape,
-                            border = if (state.bypassDrivingRestriction) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                                selectedLabelColor = AppleGlass.AppleBlue,
-                                containerColor = Color(0x14FFFFFF),
-                                labelColor = AppleGlass.TextSecondary
-                            ),
                             label = {
                                 Text(
                                     text = strings.bypassDrivingRestrictionChip,
                                     maxLines = 1,
-                                    softWrap = false,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -1624,19 +1219,10 @@ private fun PatchAndInstallTab(
                             onClick = {
                                 viewModel.updateCompatFlags(gamepadSupport = !state.enableGamepadSupport)
                             },
-                            shape = CircleShape,
-                            border = if (state.enableGamepadSupport) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                                selectedLabelColor = AppleGlass.AppleBlue,
-                                containerColor = Color(0x14FFFFFF),
-                                labelColor = AppleGlass.TextSecondary
-                            ),
                             label = {
                                 Text(
                                     text = strings.gamepadSupportChip,
                                     maxLines = 1,
-                                    softWrap = false,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -1646,19 +1232,10 @@ private fun PatchAndInstallTab(
                             onClick = {
                                 viewModel.updateCompatFlags(unlockOrientation = !state.unlockScreenOrientation)
                             },
-                            shape = CircleShape,
-                            border = if (state.unlockScreenOrientation) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = AppleGlass.AppleBlue.copy(alpha = 0.22f),
-                                selectedLabelColor = AppleGlass.AppleBlue,
-                                containerColor = Color(0x14FFFFFF),
-                                labelColor = AppleGlass.TextSecondary
-                            ),
                             label = {
                                 Text(
                                     text = strings.unlockOrientationChip,
                                     maxLines = 1,
-                                    softWrap = false,
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
@@ -1669,153 +1246,127 @@ private fun PatchAndInstallTab(
                         Text(
                             text = strings.carLauncherCategoryLabel,
                             style = MaterialTheme.typography.labelMedium,
-                            color = AppleGlass.TextSecondary
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            CarAppCategory.entries.forEach { cat ->
-                                val isCatSelected = state.selectedCategory == cat
-                                Surface(
-                                    onClick = { viewModel.updateCategory(cat) },
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isCatSelected) AppleGlass.AppleBlue.copy(alpha = 0.16f) else Color(0x10FFFFFF),
-                                    border = if (isCatSelected) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
+
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                val categories = CarAppCategory.entries
+                                categories.forEachIndexed { idx, cat ->
+                                    val isCatSelected = state.selectedCategory == cat
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                                            .clickable { viewModel.updateCategory(cat) }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp)
                                     ) {
                                         RadioButton(
                                             selected = isCatSelected,
-                                            onClick = null,
-                                            colors = RadioButtonDefaults.colors(
-                                                selectedColor = AppleGlass.AppleBlue,
-                                                unselectedColor = AppleGlass.TextTertiary
-                                            )
+                                            onClick = null
                                         )
                                         Spacer(modifier = Modifier.width(10.dp))
                                         Text(
                                             text = strings.categoryName(cat),
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = AppleGlass.TextPrimary,
+                                            color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    if (idx < categories.lastIndex) {
+                                        HorizontalDivider(
+                                            modifier = Modifier.padding(start = 46.dp, end = 12.dp),
+                                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                                         )
                                     }
                                 }
                             }
                         }
 
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = Color(0x20FFFFFF))
-
-                        Surface(
-                            onClick = { viewModel.updateUseRootShellForTouch(!state.useRootShellForTouch) },
-                            shape = RoundedCornerShape(16.dp),
-                            color = if (state.useRootShellForTouch) AppleGlass.AppleBlue.copy(alpha = 0.14f) else Color(0x10FFFFFF),
-                            border = if (state.useRootShellForTouch) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.medium)
+                                .clickable { viewModel.updateUseRootShellForTouch(!state.useRootShellForTouch) }
+                                .padding(vertical = 6.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(14.dp)
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = strings.touchModeRootLabel,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = AppleGlass.TextPrimary
-                                    )
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = strings.touchModeRootDesc,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = AppleGlass.TextSecondary
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Switch(
-                                    checked = state.useRootShellForTouch,
-                                    onCheckedChange = viewModel::updateUseRootShellForTouch,
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.White,
-                                        checkedTrackColor = AppleGlass.AppleGreen,
-                                        uncheckedThumbColor = Color(0xFFE0E0E0),
-                                        uncheckedTrackColor = Color(0x33FFFFFF)
-                                    )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = strings.touchModeRootLabel,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = strings.touchModeRootDesc,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Switch(
+                                checked = state.useRootShellForTouch,
+                                onCheckedChange = viewModel::updateUseRootShellForTouch
+                            )
                         }
                     }
                 }
             }
         }
 
-        // Section 2: Install Mode
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = AppleGlass.GlassCard,
-            border = AppleGlass.SpecularBorder,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = strings.section2InstallModeTitle,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = AppleGlass.AppleBlue
-                )
-
-                InstallMode.entries.forEach { mode ->
-                    val selected = state.selectedInstallMode == mode
-                    Surface(
-                        onClick = { viewModel.updateInstallMode(mode) },
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (selected) AppleGlass.AppleBlue.copy(alpha = 0.16f) else Color(0x10FFFFFF),
-                        border = if (selected) AppleGlass.ActiveBorder else AppleGlass.ThinBorder,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            verticalAlignment = Alignment.Top
-                        ) {
-                            RadioButton(
-                                selected = selected,
-                                onClick = null,
-                                colors = RadioButtonDefaults.colors(
-                                    selectedColor = AppleGlass.AppleBlue,
-                                    unselectedColor = AppleGlass.TextTertiary
-                                )
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = strings.installModeTitle(mode),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppleGlass.TextPrimary
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = strings.installModeSubtitle(mode),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = AppleGlass.TextSecondary
-                                )
+        // Section 2: Install Mode (Grouped Seamless List)
+        SectionGroup(title = strings.section2InstallModeTitle) {
+            val modes = InstallMode.entries
+            modes.forEachIndexed { index, mode ->
+                val selected = state.selectedInstallMode == mode
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.updateInstallMode(mode) }
+                        .background(
+                            if (selected) {
+                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+                            } else {
+                                Color.Transparent
                             }
-                        }
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    RadioButton(
+                        selected = selected,
+                        onClick = null,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.installModeTitle(mode),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = strings.installModeSubtitle(mode),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
+                }
+                if (index < modes.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 52.dp, end = 16.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                    )
                 }
             }
         }
@@ -1826,27 +1377,25 @@ private fun PatchAndInstallTab(
                 bannerEntry(strings)
             }
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = Color(0x1FFFFFFF),
-                border = AppleGlass.SpecularBorder,
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.secondaryContainer,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        tint = AppleGlass.AppleBlue,
-                        modifier = Modifier.size(20.dp)
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(18.dp)
                     )
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = bannerText,
                         style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = AppleGlass.TextPrimary,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -1855,106 +1404,85 @@ private fun PatchAndInstallTab(
 
         // Action Buttons
         Column(
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             val isDirectNoPatch = state.selectedStrategy == PatchStrategy.DIRECT_INSTALL_NO_PATCH
             Button(
                 onClick = { viewModel.startPatchAndInstall(installImmediately = true) },
                 enabled = !state.isWorking,
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = AppleGlass.AppleBlue,
-                    contentColor = Color.White
-                ),
-                contentPadding = PaddingValues(vertical = 14.dp, horizontal = 18.dp),
+                shape = MaterialTheme.shapes.medium,
+                contentPadding = PaddingValues(vertical = 12.dp, horizontal = 16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (state.isWorking) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = strings.processingButton,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 } else {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White)
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (isDirectNoPatch) strings.directInstallNoPatchButton else strings.patchAndInstallButton,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White,
                         maxLines = 1,
-                        softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
             if (!isDirectNoPatch) {
-                Surface(
-                    onClick = { viewModel.startPatchAndInstall(installImmediately = false) },
-                    enabled = !state.isWorking,
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0x20FFFFFF),
-                    border = AppleGlass.ThinBorder,
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 13.dp, horizontal = 18.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                    FilledTonalButton(
+                        onClick = { viewModel.startPatchAndInstall(installImmediately = false) },
+                        enabled = !state.isWorking,
+                        shape = MaterialTheme.shapes.medium,
+                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 12.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Save, contentDescription = null, tint = AppleGlass.AppleBlue, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Default.Save,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.patchAndSaveButton,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppleGlass.TextPrimary,
                             maxLines = 1,
-                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                }
 
-                Surface(
-                    onClick = viewModel::startDirectInstallOriginalApk,
-                    enabled = !state.isWorking,
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0x12FFFFFF),
-                    border = AppleGlass.ThinBorder,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp, horizontal = 18.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                    OutlinedButton(
+                        onClick = viewModel::startDirectInstallOriginalApk,
+                        enabled = !state.isWorking,
+                        shape = MaterialTheme.shapes.medium,
+                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 12.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = AppleGlass.AppleBlue, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.directInstallNoPatchButton,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppleGlass.TextPrimary,
                             maxLines = 1,
-                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -1964,33 +1492,28 @@ private fun PatchAndInstallTab(
 
         // Saved storage card
         state.lastSavedStoragePath?.let { savedPath ->
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = AppleGlass.GlassCard,
-                border = AppleGlass.SpecularBorder,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+            SectionGroup {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = null,
-                            tint = AppleGlass.AppleGreen,
+                            tint = MaterialTheme.colorScheme.tertiary,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = strings.savedInStorageLabel,
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = AppleGlass.TextPrimary
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = savedPath,
                         style = MaterialTheme.typography.bodySmall,
-                        color = AppleGlass.TextSecondary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontFamily = FontFamily.Monospace
                     )
                 }
@@ -1999,145 +1522,88 @@ private fun PatchAndInstallTab(
 
         if (state.lastPatchedApk != null && !state.isWorking) {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
+                OutlinedButton(
                     onClick = viewModel::saveLastPatchedApkToDownloads,
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0x18FFFFFF),
-                    border = AppleGlass.ThinBorder,
-                    modifier = Modifier.weight(1f)
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp, horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Save, contentDescription = null, tint = AppleGlass.AppleBlue, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = strings.saveToDownloadButton,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppleGlass.TextPrimary,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = strings.saveToDownloadButton,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
-                Surface(
+                OutlinedButton(
                     onClick = {
                         val pkg = state.lastPatchedPackageName ?: candidate.packageName
                         saveApkLauncher.launch("${pkg}_AA_Patched.apk")
                     },
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0x18FFFFFF),
-                    border = AppleGlass.ThinBorder,
-                    modifier = Modifier.weight(1f)
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp, horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, tint = AppleGlass.AppleBlue, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = strings.chooseSaveFolderButton,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppleGlass.TextPrimary,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-
-            Surface(
-                onClick = viewModel::installLastPatchedApk,
-                shape = RoundedCornerShape(14.dp),
-                color = Color(0x18FFFFFF),
-                border = AppleGlass.ThinBorder,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 12.dp, horizontal = 14.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = strings.reinstallLastPatchedFormat(state.lastPatchedApk.name),
+                        text = strings.chooseSaveFolderButton,
                         style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AppleGlass.AppleBlue,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
+
+            FilledTonalButton(
+                onClick = viewModel::installLastPatchedApk,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = strings.reinstallLastPatchedFormat(state.lastPatchedApk.name),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
 
-        // Apple Dark Terminal Console Box
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = Color(0xFF0C0C10),
-            border = AppleGlass.ThinBorder,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+        // Clean Android System Log Viewer (no fake macOS window dots)
+        SectionGroup {
+            Column(modifier = Modifier.padding(14.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(Color(0xFFFF5F56)))
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(Color(0xFFFFBD2E)))
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(Color(0xFF27C93F)))
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = strings.consoleTitle,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = AppleGlass.TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Surface(
+                    Text(
+                        text = strings.consoleTitle,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    TextButton(
                         onClick = { viewModel.clearLogs() },
-                        shape = CircleShape,
-                        color = Color(0x18FFFFFF),
-                        border = AppleGlass.ThinBorder
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(30.dp)
                     ) {
                         Text(
                             text = strings.clearLogsButton,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AppleGlass.TextSecondary,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                            style = MaterialTheme.typography.labelMedium
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFF060609),
-                    border = BorderStroke(1.dp, Color(0x18FFFFFF)),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Box(modifier = Modifier.padding(12.dp)) {
@@ -2146,7 +1612,7 @@ private fun PatchAndInstallTab(
                                 text = strings.readyToExecute,
                                 fontFamily = FontFamily.Monospace,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = AppleGlass.TextTertiary
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else {
                             val logs = remember(state.logEntries, strings) {
@@ -2157,7 +1623,7 @@ private fun PatchAndInstallTab(
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 260.dp)
+                                    .heightIn(max = 240.dp)
                                     .verticalScroll(rememberScrollState())
                             ) {
                                 logs.forEach { logLine ->
@@ -2165,7 +1631,7 @@ private fun PatchAndInstallTab(
                                         text = logLine,
                                         fontFamily = FontFamily.Monospace,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = Color(0xFFD4D4D8),
+                                        color = MaterialTheme.colorScheme.onSurface,
                                         modifier = Modifier.padding(vertical = 1.dp)
                                     )
                                 }
@@ -2182,7 +1648,6 @@ private fun PatchAndInstallTab(
 private fun EnvironmentDiagnosticTab(
     env: EnvironmentStatus?,
     strings: AppStrings,
-    bottomPadding: Dp = 16.dp,
     onRequestShizuku: () -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -2192,16 +1657,9 @@ private fun EnvironmentDiagnosticTab(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding + 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(
-            text = strings.envHeaderTitle,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = AppleGlass.TextPrimary
-        )
-
         if (env == null) {
             Box(
                 modifier = Modifier
@@ -2209,92 +1667,89 @@ private fun EnvironmentDiagnosticTab(
                     .padding(32.dp),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator(color = AppleGlass.AppleBlue)
+                CircularProgressIndicator()
             }
             return@Column
         }
 
-        DiagRow(
-            title = strings.diagAndroidOsTitle,
-            value = "Android ${env.androidReleaseName} (API ${env.androidVersion})",
-            isOk = true
-        )
+        SectionGroup(title = strings.envHeaderTitle) {
+            DiagItemRow(
+                title = strings.diagAndroidOsTitle,
+                value = "Android ${env.androidReleaseName} (API ${env.androidVersion})",
+                isOk = true
+            )
+            DiagDivider()
 
-        DiagRow(
-            title = strings.diagGearheadTitle,
-            value = if (env.isAndroidAutoInstalled) {
-                strings.diagGearheadInstalledFormat(env.androidAutoVersion)
-            } else {
-                strings.diagGearheadNotInstalled
-            },
-            isOk = env.isAndroidAutoInstalled
-        )
+            DiagItemRow(
+                title = strings.diagGearheadTitle,
+                value = if (env.isAndroidAutoInstalled) {
+                    strings.diagGearheadInstalledFormat(env.androidAutoVersion)
+                } else {
+                    strings.diagGearheadNotInstalled
+                },
+                isOk = env.isAndroidAutoInstalled
+            )
+            DiagDivider()
 
-        DiagRow(
-            title = strings.diagShizukuTitle,
-            value = when {
-                env.isShizukuPermissionGranted -> strings.diagShizukuGranted
-                env.isShizukuAvailable -> strings.diagShizukuRunningNotGranted
-                else -> strings.diagShizukuNotRunning
-            },
-            isOk = env.isShizukuPermissionGranted,
-            actionLabel = if (env.isShizukuAvailable && !env.isShizukuPermissionGranted) strings.diagGrantShizukuButton else null,
-            onAction = onRequestShizuku
-        )
+            DiagItemRow(
+                title = strings.diagShizukuTitle,
+                value = when {
+                    env.isShizukuPermissionGranted -> strings.diagShizukuGranted
+                    env.isShizukuAvailable -> strings.diagShizukuRunningNotGranted
+                    else -> strings.diagShizukuNotRunning
+                },
+                isOk = env.isShizukuPermissionGranted,
+                actionLabel = if (env.isShizukuAvailable && !env.isShizukuPermissionGranted) {
+                    strings.diagGrantShizukuButton
+                } else {
+                    null
+                },
+                onAction = onRequestShizuku
+            )
+            DiagDivider()
 
-        DiagRow(
-            title = strings.diagRootTitle,
-            value = if (env.isRootAvailable) strings.diagRootAvailable else strings.diagRootNotDetected,
-            isOk = env.isRootAvailable
-        )
+            DiagItemRow(
+                title = strings.diagRootTitle,
+                value = if (env.isRootAvailable) strings.diagRootAvailable else strings.diagRootNotDetected,
+                isOk = env.isRootAvailable
+            )
+            DiagDivider()
 
-        DiagRow(
-            title = strings.diagXposedTitle,
-            value = if (env.isXposedModuleActive) strings.diagXposedActive else strings.diagXposedInactive,
-            isOk = env.isXposedModuleActive
-        )
+            DiagItemRow(
+                title = strings.diagXposedTitle,
+                value = if (env.isXposedModuleActive) strings.diagXposedActive else strings.diagXposedInactive,
+                isOk = env.isXposedModuleActive
+            )
+            DiagDivider()
 
-        DiagRow(
-            title = strings.drivingHookDiagTitle,
-            value = if (env.isXposedModuleActive) strings.drivingHookDiagActive else strings.drivingHookDiagManifestOnly,
-            isOk = true
-        )
+            DiagItemRow(
+                title = strings.drivingHookDiagTitle,
+                value = if (env.isXposedModuleActive) strings.drivingHookDiagActive else strings.drivingHookDiagManifestOnly,
+                isOk = true
+            )
+        }
 
-        // Apple Liquid Glass Info / Guide Card
-        Surface(
-            shape = RoundedCornerShape(22.dp),
-            color = AppleGlass.GlassCard,
-            border = AppleGlass.SpecularBorder,
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        // Developer Guide Section
+        SectionGroup {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(18.dp),
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        shape = CircleShape,
-                        color = AppleGlass.AppleBlue.copy(alpha = 0.20f),
-                        border = BorderStroke(1.dp, AppleGlass.AppleBlue.copy(alpha = 0.5f)),
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.Info,
-                                contentDescription = null,
-                                tint = AppleGlass.AppleBlue,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         text = strings.unknownSourcesGuideTitle,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = AppleGlass.TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -2302,11 +1757,11 @@ private fun EnvironmentDiagnosticTab(
                 Text(
                     text = strings.unknownSourcesGuideSteps,
                     style = MaterialTheme.typography.bodySmall,
-                    color = AppleGlass.TextSecondary
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Button(
@@ -2327,52 +1782,39 @@ private fun EnvironmentDiagnosticTab(
                                 if (fallback != null) context.startActivity(fallback)
                             }
                         },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AppleGlass.AppleBlue,
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                     ) {
-                        Icon(Icons.Default.Settings, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.openAASettingsButton,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White,
                             maxLines = 1,
-                            softWrap = false,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
 
-                    Surface(
+                    OutlinedButton(
                         onClick = onRefresh,
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0x18FFFFFF),
-                        border = AppleGlass.ThinBorder,
-                        modifier = Modifier.fillMaxWidth()
+                        shape = MaterialTheme.shapes.medium,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 12.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, tint = AppleGlass.AppleBlue, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = strings.recheckButton,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = AppleGlass.TextPrimary,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = strings.recheckButton,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -2381,83 +1823,61 @@ private fun EnvironmentDiagnosticTab(
 }
 
 @Composable
-private fun DiagRow(
+private fun DiagDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 50.dp, end = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+    )
+}
+
+@Composable
+private fun DiagItemRow(
     title: String,
     value: String,
     isOk: Boolean,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null
 ) {
-    Surface(
-        shape = RoundedCornerShape(18.dp),
-        color = AppleGlass.GlassCard,
-        border = AppleGlass.SpecularBorder,
-        modifier = Modifier.fillMaxWidth()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+        Icon(
+            imageVector = if (isOk) Icons.Default.CheckCircle else Icons.Default.Warning,
+            contentDescription = null,
+            tint = if (isOk) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(22.dp)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (actionLabel != null && onAction != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            FilledTonalButton(
+                onClick = onAction,
+                shape = MaterialTheme.shapes.small,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = if (isOk) AppleGlass.AppleGreenGlass else AppleGlass.AppleRedGlass,
-                    border = if (isOk) AppleGlass.GreenBorder else BorderStroke(1.dp, AppleGlass.AppleRed.copy(alpha = 0.5f)),
-                    modifier = Modifier.size(38.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = if (isOk) Icons.Default.CheckCircle else Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = if (isOk) AppleGlass.AppleGreen else AppleGlass.AppleRed,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AppleGlass.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = value,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AppleGlass.TextSecondary
-                    )
-                }
-            }
-
-            if (actionLabel != null && onAction != null) {
-                Surface(
-                    onClick = onAction,
-                    shape = RoundedCornerShape(12.dp),
-                    color = AppleGlass.AppleBlue.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, AppleGlass.AppleBlue.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = actionLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AppleGlass.AppleBlue,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(vertical = 10.dp)
-                    )
-                }
+                Text(
+                    text = actionLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
     }

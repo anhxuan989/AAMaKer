@@ -1,172 +1,159 @@
 package com.aamaker.app.ui.theme
 
-import androidx.compose.foundation.BorderStroke
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Apple Liquid Glass Design System
-object AppleGlass {
-    val PureBlack = Color(0xFF000000)
-    val FrostedDark = Color(0xFF0A0A0D).copy(alpha = 0.90f)
-    val GlassCard = Color(0xFF15151A).copy(alpha = 0.72f)
-    val GlassCardHigh = Color(0xFF1E1E24).copy(alpha = 0.78f)
-    val GlassSurface = Color(0xFF101014).copy(alpha = 0.65f)
-    val GlassInner = Color(0xFF1C1C22).copy(alpha = 0.50f)
-    val GlassInteractive = Color(0x24FFFFFF)
-    
-    val AppleBlue = Color(0xFF0A84FF)
-    val AppleBlueGlass = Color(0xFF0A84FF).copy(alpha = 0.18f)
-    val AppleGreen = Color(0xFF30D158)
-    val AppleGreenGlass = Color(0xFF30D158).copy(alpha = 0.16f)
-    val AppleRed = Color(0xFFFF453A)
-    val AppleRedGlass = Color(0xFFFF453A).copy(alpha = 0.18f)
-    val AppleOrange = Color(0xFFFF9F0A)
-    val AppleIndigo = Color(0xFF5E5CE6)
+private val DarkColorScheme = darkColorScheme(
+    primary = Color(0xFFA8C7FA),
+    onPrimary = Color(0xFF062E6F),
+    primaryContainer = Color(0xFF0842A0),
+    onPrimaryContainer = Color(0xFFD3E3FD),
+    secondary = Color(0xFFBEC6DC),
+    onSecondary = Color(0xFF283041),
+    secondaryContainer = Color(0xFF3E4759),
+    onSecondaryContainer = Color(0xFFDAE2F9),
+    tertiary = Color(0xFF81C995),
+    onTertiary = Color(0xFF003919),
+    tertiaryContainer = Color(0xFF0F5223),
+    onTertiaryContainer = Color(0xFFC4EED0),
+    background = Color(0xFF111318),
+    onBackground = Color(0xFFE2E2E9),
+    surface = Color(0xFF111318),
+    onSurface = Color(0xFFE2E2E9),
+    surfaceVariant = Color(0xFF44474F),
+    onSurfaceVariant = Color(0xFFC4C6D0),
+    surfaceContainerLowest = Color(0xFF0C0E13),
+    surfaceContainerLow = Color(0xFF191C22),
+    surfaceContainer = Color(0xFF1D2026),
+    surfaceContainerHigh = Color(0xFF282A31),
+    surfaceContainerHighest = Color(0xFF33353C),
+    outline = Color(0xFF8E9099),
+    outlineVariant = Color(0xFF44474F),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+    errorContainer = Color(0xFF93000A),
+    onErrorContainer = Color(0xFFFFDAD6)
+)
 
-    val TextPrimary = Color(0xFFFFFFFF)
-    val TextSecondary = Color(0x99EBEBF5)
-    val TextTertiary = Color(0x61EBEBF5)
-
-    // Specular highlight on glass top border
-    val SpecularBorder = BorderStroke(
-        1.dp,
-        Brush.verticalGradient(
-            listOf(
-                Color(0x4DFFFFFF), // 30% top light reflection
-                Color(0x14FFFFFF)  // 8% bottom rim
-            )
-        )
-    )
-
-    val ThinBorder = BorderStroke(1.dp, Color(0x28FFFFFF))
-    val ActiveBorder = BorderStroke(1.5.dp, Color(0xFF0A84FF).copy(alpha = 0.85f))
-    val GreenBorder = BorderStroke(1.dp, Color(0xFF30D158).copy(alpha = 0.45f))
-
-    val LiquidGradient = Brush.verticalGradient(
-        listOf(
-            Color(0x2EFFFFFF),
-            Color(0x0AFFFFFF)
-        )
-    )
-
-    val AmbientGlow = Brush.verticalGradient(
-        listOf(
-            Color(0xFF0A84FF).copy(alpha = 0.08f),
-            Color.Transparent
-        )
-    )
-}
-
-private val AppleLiquidGlassColorScheme = darkColorScheme(
-    primary = AppleGlass.AppleBlue,
+private val LightColorScheme = lightColorScheme(
+    primary = Color(0xFF0B57D0),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = AppleGlass.AppleBlueGlass,
-    onPrimaryContainer = Color(0xFF82C2FF),
-    secondary = AppleGlass.AppleGreen,
-    onSecondary = Color(0xFF000000),
-    secondaryContainer = AppleGlass.AppleGreenGlass,
-    onSecondaryContainer = Color(0xFF75F594),
-    tertiary = AppleGlass.AppleIndigo,
+    primaryContainer = Color(0xFFD3E3FD),
+    onPrimaryContainer = Color(0xFF041E49),
+    secondary = Color(0xFF565E71),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFDAE2F9),
+    onSecondaryContainer = Color(0xFF131C2B),
+    tertiary = Color(0xFF146C2E),
     onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFF5E5CE6).copy(alpha = 0.20f),
-    onTertiaryContainer = Color(0xFFC7C6FF),
-    background = AppleGlass.PureBlack,
-    onBackground = Color(0xFFFFFFFF),
-    surface = AppleGlass.PureBlack,
-    onSurface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFF141418),
-    onSurfaceVariant = AppleGlass.TextSecondary,
-    surfaceContainerLowest = AppleGlass.PureBlack,
-    surfaceContainerLow = Color(0xFF0A0A0D),
-    surfaceContainer = Color(0xFF121216),
-    surfaceContainerHigh = Color(0xFF1B1B22),
-    surfaceContainerHighest = Color(0xFF262630),
-    outline = Color(0x38FFFFFF),
-    outlineVariant = Color(0x1AFFFFFF),
-    error = AppleGlass.AppleRed,
-    onError = Color(0xFF000000),
-    errorContainer = AppleGlass.AppleRedGlass,
-    onErrorContainer = Color(0xFFFF9E98)
+    tertiaryContainer = Color(0xFFC4EED0),
+    onTertiaryContainer = Color(0xFF072711),
+    background = Color(0xFFF8F9FF),
+    onBackground = Color(0xFF191C20),
+    surface = Color(0xFFF8F9FF),
+    onSurface = Color(0xFF191C20),
+    surfaceVariant = Color(0xFFE0E2EC),
+    onSurfaceVariant = Color(0xFF44474F),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF2F3FA),
+    surfaceContainer = Color(0xFFECEDF4),
+    surfaceContainerHigh = Color(0xFFE6E8EE),
+    surfaceContainerHighest = Color(0xFFE1E2E9),
+    outline = Color(0xFF74777F),
+    outlineVariant = Color(0xFFC4C6D0),
+    error = Color(0xFFBA1A1A),
+    onError = Color(0xFFFFFFFF),
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002)
 )
 
-// Apple iOS continuous corner curvature
-private val AppleSquircleShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp),
-    extraLarge = RoundedCornerShape(30.dp)
+private val AppShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(24.dp)
 )
 
-private val AppleSFProTypography = Typography(
+private val AppTypography = Typography(
     titleLarge = TextStyle(
-        fontWeight = FontWeight.Bold,
-        fontSize = 21.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 20.sp,
         lineHeight = 26.sp,
-        letterSpacing = (-0.3).sp,
-        color = AppleGlass.TextPrimary
+        letterSpacing = 0.sp
     ),
     titleMedium = TextStyle(
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 17.sp,
+        fontWeight = FontWeight.Medium,
+        fontSize = 16.sp,
         lineHeight = 22.sp,
-        letterSpacing = (-0.2).sp,
-        color = AppleGlass.TextPrimary
+        letterSpacing = 0.1.sp
     ),
     titleSmall = TextStyle(
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 15.sp,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
         lineHeight = 20.sp,
-        letterSpacing = (-0.1).sp,
-        color = AppleGlass.TextPrimary
+        letterSpacing = 0.1.sp
     ),
     bodyMedium = TextStyle(
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
+        fontSize = 14.sp,
         lineHeight = 20.sp,
-        color = AppleGlass.TextPrimary
+        letterSpacing = 0.2.sp
     ),
     bodySmall = TextStyle(
         fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        color = AppleGlass.TextSecondary
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.2.sp
     ),
     labelMedium = TextStyle(
         fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        letterSpacing = (-0.1).sp,
-        color = AppleGlass.TextPrimary
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.3.sp
     ),
     labelSmall = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        color = AppleGlass.TextSecondary
+        letterSpacing = 0.3.sp
     )
 )
 
 @Composable
 fun AAMaKerTheme(
-    darkTheme: Boolean = true,
-    dynamicColor: Boolean = false,
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
+    val context = LocalContext.current
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
+
     MaterialTheme(
-        colorScheme = AppleLiquidGlassColorScheme,
-        shapes = AppleSquircleShapes,
-        typography = AppleSFProTypography,
+        colorScheme = colorScheme,
+        shapes = AppShapes,
+        typography = AppTypography,
         content = content
     )
 }

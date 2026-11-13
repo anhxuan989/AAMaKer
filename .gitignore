@@ -20,6 +20,12 @@ bin/
 gen/
 out/
 
+# Keystore & Signing
+keystore/
+*.jks
+*.keystore
+keystore.properties
+
 # Archives & Temp
 *.zip
 *.tar.gz
