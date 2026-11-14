@@ -347,24 +347,33 @@ object AppTranslations {
     private val REGEX_PAT_14 = Regex("""^\[Direct Install\] Lỗi chuẩn bị APK gốc: (.*)$""")
     private val REGEX_PAT_15 = Regex("""^Lỗi đọc file APK gốc: (.*)$""")
     private val REGEX_PAT_16 = Regex("""^\[Merger\] Phát hiện gói Bundle \((.*)\), đang giải nén các APK thành phần\.\.\.$""")
-    private val REGEX_PAT_17 = Regex("""^\[Merger\] Phát hiện (\d+) Split APKs, đang hợp nhất thành APK đơn\.\.\.$""")
+    private val REGEX_PAT_17 = Regex("""^\[Merger\] Phát hiện (\d+) Split APKs, đang hợp nhất (?:cấu trúc nhị phân \(DEX \+ resources\.arsc \+ Native Libs \+ Assets\)|thành APK đơn)\.\.\.$""")
+    private val REGEX_PAT_17B = Regex("""^\[Merger\] \+ Nạp APK nền \(base\): (.*)$""")
+    private val REGEX_PAT_17C = Regex("""^\[Merger\] \+ Nạp Split APK: (.*)$""")
     private val REGEX_PAT_18 = Regex("""^\[Merger\] Đang gộp thành phần từ (.*)\.\.\.$""")
-    private val REGEX_PAT_19 = Regex("""^\[Merger\] Đã hợp nhất thành công Split APKs \((.*) KB\)\.$""")
-    private val REGEX_PAT_20 = Regex("""^\[Merger\] \+ Đã tích hợp tài nguyên OBB: (.*) -> (.*)$""")
+    private val REGEX_PAT_19 = Regex("""^\[Merger\] Đã hợp nhất (?:hoàn chỉnh (\d+) APK thành 1 module duy nhất \((\d+) DEX\)|thành công Split APKs \((.*) KB\))\.$""")
+    private val REGEX_PAT_19B = Regex("""^\[Merger\] \+ Đã hợp nhất (\d+) thành phần Feature Split vào AndroidManifest\.xml\.$""")
+    private val REGEX_PAT_19C = Regex("""^\[Merger\] \+ Đã dọn thư mục ABI không đầy đủ 'lib/(.*)' \((\d+)/(\d+) thư viện \.so\) để tránh lỗi UnsatisfiedLinkError\.$""")
+    private val REGEX_PAT_20 = Regex("""^\[Merger\] \+ (?:Đã tích hợp tài nguyên OBB: (.*) -> (.*)|Gộp dữ liệu OBB: (.*))$""")
     private val REGEX_PAT_21 = Regex("""^\[Patcher\] \+ Đã kích hoạt chế độ Parked App \(appCategory=game, CAR_LAUNCHER & distractionOptimized\) cho (\d+) Launcher Activity\.$""")
+    private val REGEX_PAT_21B = Regex("""^\[Patcher\] \+ Đã chuẩn hóa (\d+) bảng tài nguyên nén \(Sparse/Compact TypeBlock\) sang định dạng chuẩn để bảo toàn ID tài nguyên\.$""")
     private val REGEX_PAT_22 = Regex("""^\[Patcher\] \+ Đã tối ưu hóa phần cứng: bật hỗ trợ Gamepad=(true|false), gỡ bỏ bắt buộc cho (\d+) uses-feature\.$""")
-    private val REGEX_PAT_23 = Regex("""^\[Patcher\] Đang đổi tên gói: (.*) -> (.*) \(cập nhật Manifest & Authorities\)\.\.\.$""")
+    private val REGEX_PAT_23 = Regex("""^\[Patcher\] Đang đổi tên gói: (.*) -> (.*) \(cập nhật (?:Application, Component, Permission & Authorities|Manifest & Authorities)\)\.\.\.$""")
     private val REGEX_PAT_24 = Regex("""^\[Patcher\] Đang cập nhật tên hiển thị ứng dụng thành: (.*)$""")
-    private val REGEX_PAT_25 = Regex("""^\[Patcher\] \+ Đã gỡ bỏ (\d+) thuộc tính/meta-data bắt buộc Split APK \(chống lỗi INSTALL_FAILED_MISSING_SPLIT\)\.$""")
+    private val REGEX_PAT_25 = Regex("""^\[Patcher\] \+ Đã (?:gỡ bỏ|dọn sạch an toàn) (\d+) (?:thuộc tính/meta-data bắt buộc Split APK \(chống lỗi INSTALL_FAILED_MISSING_SPLIT\)|thuộc tính/meta-data Split APK \(bảo toàn tài nguyên dùng chung\))\.$""")
+    private val REGEX_PAT_25B = Regex("""^\[Patcher\] \+ Đã vô hiệu hóa (\d+) thành phần kiểm tra giấy phép Play Licensing\.$""")
     private val REGEX_PAT_26 = Regex("""^\[Patcher\] \+ Thêm quyền: (.*)$""")
-    private val REGEX_PAT_27 = Regex("""^\[Patcher\] APK đã có sẵn khai báo '(.*)' \((.*)\)\.$""")
+    private val REGEX_PAT_27 = Regex("""^\[Patcher\] APK đã có sẵn khai báo '(.*)' \(@?([0-9a-fA-FxX]+)\)\.$""")
     private val REGEX_PAT_28 = Regex("""^\[Patcher\] Đang tạo Binary XML '(.*)' và đăng ký vào bảng resources\.arsc\.\.\.$""")
-    private val REGEX_PAT_29 = Regex("""^\[Patcher\] \+ Đã cấp phát Resource ID (.*) -> (.*)$""")
+    private val REGEX_PAT_29 = Regex("""^\[Patcher\] \+ Đã cấp phát Resource ID @?([0-9a-fA-FxX]+) -> (.*)$""")
     private val REGEX_PAT_30 = Regex("""^\[Patcher\] \+ Đã gắn (.*)$""")
     private val REGEX_PAT_31 = Regex("""^\[Patcher\] Đang tiêm (.*) vào AndroidManifest\.xml\.\.\.$""")
     private val REGEX_PAT_32 = Regex("""^\[Patcher\] \+ Đã tiêm cờ mở khóa khi xe di chuyển \(distractionOptimized\) cho toàn bộ (\d+) Activity\.$""")
-    private val REGEX_PAT_33 = Regex("""^\[Patcher\] \+ Đã tiêm Universal AA Runtime DEX thành '(.*)' \((.*) KB\)\.$""")
+    private val REGEX_PAT_33 = Regex("""^\[Patcher\] \+ Đã tiêm (?:Universal AA Runtime DEX thành|Bootstrap Service DEX cô lập thành) '(.*)' \((.*)(?: KB| bytes — không xung đột AndroidX/Kotlin/Guava)\)\.$""")
+    private val REGEX_PAT_33B = Regex("""^\[Patcher\] \+ Đã đóng gói (\d+) phân đoạn Isolated Car Runtime vào assets/aa_car_res\.dat\.$""")
     private val REGEX_PAT_34 = Regex("""^\[Patcher\] Cảnh báo khi tiêm DEX: (.*)$""")
+    private val REGEX_PAT_SIGNER_PREPARE = Regex("""^\[Signer\] Đang chuẩn bị khóa RSA-2048 & chứng chỉ X\.509 để ký APK \(Scheme V1 \+ V2 \+ V3(?:, minSdk=(\d+))?\)\.\.\.$""")
+    private val REGEX_PAT_SIGNATURE_WARNING = Regex("""^\[Patcher\] ! Cảnh báo: Phát hiện cơ chế kiểm tra chữ ký gốc tầng Native/C\+\+ \((.*)\) — (.*)$""")
     private val REGEX_PAT_35 = Regex("""^\[Signer\] Đã ký APK hoàn tất \((.*) KB\)\.$""")
     private val REGEX_PAT_36 = Regex("""^\[Root\] Đang sao chép APK vào (.*)\.\.\.$""")
     private val REGEX_PAT_37 = Regex("""^Không thể chép APK vào /data/local/tmp: (.*)$""")
@@ -1607,6 +1616,19 @@ object AppTranslations {
                 AppLanguage.FR -> "=== DÉMARRAGE DU PROCESSUS DE PATCH ANDROID AUTO ==="
                 else -> raw
             }
+            "[Patcher] Đang xử lý cấu trúc APK nhị phân bằng ARSCLib..." -> return when (lang) {
+                AppLanguage.EN -> "[Patcher] Processing binary APK structure with ARSCLib..."
+                AppLanguage.ZH -> "[Patcher] 正在使用 ARSCLib 处理二进制 APK 结构..."
+                AppLanguage.ES -> "[Patcher] Procesando estructura binaria del APK con ARSCLib..."
+                AppLanguage.HI -> "[Patcher] ARSCLib के साथ बाइनरी APK संरचना संसाधित की जा रही है..."
+                AppLanguage.AR -> "[Patcher] جاري معالجة بنية APK الثنائية باستخدام ARSCLib..."
+                AppLanguage.PT -> "[Patcher] Processando estrutura binária do APK com ARSCLib..."
+                AppLanguage.RU -> "[Patcher] Обработка бинарной структуры APK через ARSCLib..."
+                AppLanguage.JA -> "[Patcher] ARSCLib でバイナリ APK 構造を処理しています..."
+                AppLanguage.DE -> "[Patcher] Verarbeite binäre APK-Struktur mit ARSCLib..."
+                AppLanguage.FR -> "[Patcher] Traitement de la structure APK binaire avec ARSCLib..."
+                else -> raw
+            }
             "[Patcher] Đang nạp cấu trúc APK nhị phân bằng ARSCLib..." -> return when (lang) {
                 AppLanguage.EN -> "[Patcher] Loading binary APK structure with ARSCLib..."
                 AppLanguage.ZH -> "[Patcher] 正在使用 ARSCLib 加载二进制 APK 结构..."
@@ -1646,6 +1668,19 @@ object AppTranslations {
                 AppLanguage.FR -> "[Patcher] Mode PARKED_APP_MODE : CAR_LAUNCHER et appCategory=\"game\" activés pour Android Auto Parked App (sans injection DEX)."
                 else -> raw
             }
+            "[Patcher] Đang đóng gói lại cấu trúc APK nhị phân (căn chỉnh 16KB Page Size cho thư viện Native .so)..." -> return when (lang) {
+                AppLanguage.EN -> "[Patcher] Repackaging binary APK structure (aligning 16KB Page Size for Native .so libs)..."
+                AppLanguage.ZH -> "[Patcher] 正在重新打包二进制 APK 结构 (为 Native .so 库进行 16KB 页面对齐)..."
+                AppLanguage.ES -> "[Patcher] Reempaquetando estructura binaria del APK (alineando 16KB Page Size para libs .so)..."
+                AppLanguage.HI -> "[Patcher] बाइनरी APK संरचना पुनः पैक की जा रही है (Native .so के लिए 16KB संरेखण)..."
+                AppLanguage.AR -> "[Patcher] جاري إعادة حزم بنية APK الثنائية (محاذاة 16KB لمكتبات Native .so)..."
+                AppLanguage.PT -> "[Patcher] Reempacotando estrutura binária do APK (alinhando 16KB Page Size para bibliotecas .so)..."
+                AppLanguage.RU -> "[Patcher] Переупаковка бинарной структуры APK (выравнивание 16KB Page Size для библиотек .so)..."
+                AppLanguage.JA -> "[Patcher] バイナリ APK 構造を再パッケージ化しています (Native .so の 16KB ページアライメント)..."
+                AppLanguage.DE -> "[Patcher] Packe binäre APK-Struktur neu (16KB Page Size-Ausrichtung für Native .so-Libs)..."
+                AppLanguage.FR -> "[Patcher] Reconditionnement de la structure APK binaire (alignement Page Size 16KB pour .so)..."
+                else -> raw
+            }
             "[Patcher] Đang đóng gói lại cấu trúc APK nhị phân..." -> return when (lang) {
                 AppLanguage.EN -> "[Patcher] Repackaging binary APK structure..."
                 AppLanguage.ZH -> "[Patcher] 正在重新打包二进制 APK 结构..."
@@ -1659,6 +1694,19 @@ object AppTranslations {
                 AppLanguage.FR -> "[Patcher] Reconditionnement de la structure APK binaire..."
                 else -> raw
             }
+            "[Patcher] ! Không tìm thấy payload Universal AA Runtime trong assets, giữ nguyên DEX hiện tại." -> return when (lang) {
+                AppLanguage.EN -> "[Patcher] ! Could not find Universal AA Runtime payload in assets, keeping current DEX."
+                AppLanguage.ZH -> "[Patcher] ! 未在 assets 中找到通用 AA 运行时组件，保留当前 DEX。"
+                AppLanguage.ES -> "[Patcher] ! No se encontró el complemento Universal AA Runtime en assets, manteniendo DEX actual."
+                AppLanguage.HI -> "[Patcher] ! assets में Universal AA Runtime पेलोड नहीं मिला, मौजूदा DEX रखा जा रहा है।"
+                AppLanguage.AR -> "[Patcher] ! لم يتم العثور على حمولة Universal AA Runtime في assets، سيتم الإبقاء على DEX الحالي."
+                AppLanguage.PT -> "[Patcher] ! Payload Universal AA Runtime não encontrado em assets, mantendo DEX atual."
+                AppLanguage.RU -> "[Patcher] ! В assets не найден пэйлоад Universal AA Runtime, сохраняется текущий DEX."
+                AppLanguage.JA -> "[Patcher] ! assets 内に Universal AA Runtime ペイロードが見つかりません。現在の DEX を維持します。"
+                AppLanguage.DE -> "[Patcher] ! Universal AA Runtime Payload in assets nicht gefunden, behalte aktuelle DEX."
+                AppLanguage.FR -> "[Patcher] ! Payload Universal AA Runtime introuvable dans assets, conservation du DEX actuel."
+                else -> raw
+            }
             "[Patcher] ! Không tìm thấy assets/aa_stub_runtime.dex, giữ nguyên DEX hiện tại." -> return when (lang) {
                 AppLanguage.EN -> "[Patcher] ! Could not find assets/aa_stub_runtime.dex, keeping current DEX."
                 AppLanguage.ZH -> "[Patcher] ! 未找到 assets/aa_stub_runtime.dex，保留当前 DEX。"
@@ -1670,6 +1718,19 @@ object AppTranslations {
                 AppLanguage.JA -> "[Patcher] ! assets/aa_stub_runtime.dex が見つかりません。現在の DEX を維持します。"
                 AppLanguage.DE -> "[Patcher] ! assets/aa_stub_runtime.dex nicht gefunden, behalte aktuelle DEX."
                 AppLanguage.FR -> "[Patcher] ! assets/aa_stub_runtime.dex introuvable, conservation du DEX actuel."
+                else -> raw
+            }
+            "[Patcher] ! Cảnh báo: Phát hiện Google Play PairIP VM (libpairipcore.so / Pairip Application) — giữ nguyên thành phần Manifest của PairIP để không kích hoạt bẫy chống sửa đổi. Nếu ứng dụng tự đóng sau khi ký lại APK, cần bật giả lập chữ ký gốc (LSPosed + CorePatch / pairipfix) hoặc dùng bản APK độc lập ngoài Play Store." -> return when (lang) {
+                AppLanguage.EN -> "[Patcher] ! Warning: Detected Google Play PairIP VM (libpairipcore.so / Pairip Application) — preserving PairIP Manifest components to avoid tamper detection. If app closes on launch after resigning, enable signature spoofing (LSPosed + CorePatch / pairipfix) or use a non-Play Store APK."
+                AppLanguage.ZH -> "[Patcher] ! 警告: 检测到 Google Play PairIP VM (libpairipcore.so / Pairip Application) — 已保留 PairIP Manifest 组件以防触发防篡改。若重签后应用闪退，请开启签名伪装 (LSPosed + CorePatch / pairipfix) 或使用非 Play 商店独立版 APK。"
+                AppLanguage.ES -> "[Patcher] ! Advertencia: Detectado Google Play PairIP VM (libpairipcore.so / Pairip Application) — conservando Manifest de PairIP. Si la app se cierra al iniciar tras firmar, active la suplantación de firma (LSPosed + CorePatch) o use un APK fuera de Play Store."
+                AppLanguage.HI -> "[Patcher] ! चेतावनी: Google Play PairIP VM (libpairipcore.so / Pairip Application) मिला — PairIP घटकों को सुरक्षित रखा गया। यदि पुनः हस्ताक्षर के बाद ऐप बंद हो जाता है, तो सिग्नेचर स्पूफिंग (LSPosed + CorePatch) सक्षम करें।"
+                AppLanguage.AR -> "[Patcher] ! تحذير: تم اكتشاف Google Play PairIP VM — تم الحفاظ على عناصر PairIP لتجنب الحماية. إذا تعطل التطبيق بعد التوقيع، يُرجى تفعيل تزييف التوقيع (LSPosed + CorePatch) أو استخدام APK من خارج متجر Play."
+                AppLanguage.PT -> "[Patcher] ! Aviso: Detectado Google Play PairIP VM (libpairipcore.so / Pairip Application) — mantendo componentes do PairIP. Se o app fechar sozinho após assinar, use simulação de assinatura (LSPosed + CorePatch)."
+                AppLanguage.RU -> "[Patcher] ! Внимание: Обнаружена Google Play PairIP VM (libpairipcore.so / Pairip Application) — компоненты PairIP сохранены. Если приложение закрывается при запуске, включите подмену подписи (LSPosed + CorePatch) или используйте APK не из Play Store."
+                AppLanguage.JA -> "[Patcher] ! 警告: Google Play PairIP VM (libpairipcore.so / Pairip Application) を検出 — 改ざん検知を防ぐため PairIP 構成要素を維持します。再署名後にアプリが落ちる場合は署名偽装 (LSPosed + CorePatch) を有効にするか別版 APK を使用してください。"
+                AppLanguage.DE -> "[Patcher] ! Warnung: Google Play PairIP VM erkannt — PairIP Manifest-Komponenten beibehalten. Falls App nach Signierung schließt, Signatur-Spoofing (LSPosed + CorePatch) nutzen."
+                AppLanguage.FR -> "[Patcher] ! Avertissement : Google Play PairIP VM détecté — composants PairIP conservés. Si l'application se ferme après signature, activez l'usurpation de signature (LSPosed + CorePatch)."
                 else -> raw
             }
             "[Signer] Đang chuẩn bị khóa RSA-2048 & chứng chỉ X.509 để ký APK (Scheme V1 + V2 + V3)..." -> return when (lang) {
@@ -1696,6 +1757,19 @@ object AppTranslations {
                 AppLanguage.JA -> "[Root] 提供元 com.android.vending としてインストール中..."
                 AppLanguage.DE -> "[Root] Installiere mit Quelle com.android.vending..."
                 AppLanguage.FR -> "[Root] Installation avec la source com.android.vending..."
+                else -> raw
+            }
+            "[Root] Đã khôi phục trạng thái Play Protect ban đầu." -> return when (lang) {
+                AppLanguage.EN -> "[Root] Restored original Play Protect settings."
+                AppLanguage.ZH -> "[Root] 已恢复 Play 保护机制原始状态。"
+                AppLanguage.ES -> "[Root] Configuración original de Play Protect restaurada."
+                AppLanguage.HI -> "[Root] Play Protect की मूल स्थिति बहाल कर दी गई।"
+                AppLanguage.AR -> "[Root] تمت استعادة إعدادات Play Protect الأصلية."
+                AppLanguage.PT -> "[Root] Configurações originais do Play Protect restauradas."
+                AppLanguage.RU -> "[Root] Исходное состояние Play Защиты восстановлено."
+                AppLanguage.JA -> "[Root] Play プロテクトの元の設定を復元しました。"
+                AppLanguage.DE -> "[Root] Ursprüngliche Play Protect-Einstellungen wiederhergestellt."
+                AppLanguage.FR -> "[Root] Paramètres d'origine de Play Protect restaurés."
                 else -> raw
             }
             "[Root] Đã khởi động lại dịch vụ Android Auto (Gearhead) để cập nhật danh sách ứng dụng ngay lập tức." -> return when (lang) {
@@ -1774,6 +1848,19 @@ object AppTranslations {
                 AppLanguage.JA -> "[Shizuku] UID 2000 (ADB Shell) でインストールセッションを初期化中..."
                 AppLanguage.DE -> "[Shizuku] Initialisiere Installationssitzung mit UID 2000 (ADB Shell)..."
                 AppLanguage.FR -> "[Shizuku] Initialisation de la session d'installation avec UID 2000 (ADB Shell)..."
+                else -> raw
+            }
+            "[Shizuku] Đã khôi phục trạng thái Play Protect ban đầu." -> return when (lang) {
+                AppLanguage.EN -> "[Shizuku] Restored original Play Protect settings."
+                AppLanguage.ZH -> "[Shizuku] 已恢复 Play 保护机制原始状态。"
+                AppLanguage.ES -> "[Shizuku] Configuración original de Play Protect restaurada."
+                AppLanguage.HI -> "[Shizuku] Play Protect की मूल स्थिति बहाल कर दी गई।"
+                AppLanguage.AR -> "[Shizuku] تمت استعادة إعدادات Play Protect الأصلية."
+                AppLanguage.PT -> "[Shizuku] Configurações originais do Play Protect restauradas."
+                AppLanguage.RU -> "[Shizuku] Исходное состояние Play Защиты восстановлено."
+                AppLanguage.JA -> "[Shizuku] Play プロテクトの元の設定を復元しました。"
+                AppLanguage.DE -> "[Shizuku] Ursprüngliche Play Protect-Einstellungen wiederhergestellt."
+                AppLanguage.FR -> "[Shizuku] Paramètres d'origine de Play Protect restaurés."
                 else -> raw
             }
             "[Shizuku] Đã cấp quyền SYSTEM_ALERT_WINDOW, kích hoạt Touch Bridge & làm mới cache ứng dụng Android Auto (Gearhead)." -> return when (lang) {
@@ -2141,16 +2228,50 @@ object AppTranslations {
         REGEX_PAT_17.matchEntire(raw)?.let { m ->
             val count = m.groupValues[1]
             return when (lang) {
-                AppLanguage.EN -> "[Merger] Detected $count Split APKs, merging into a single APK..."
-                AppLanguage.ZH -> "[Merger] 检测到 $count 个分包 APK，正在合并为单个 APK..."
-                AppLanguage.ES -> "[Merger] Detectados $count Split APKs, fusionando en un único APK..."
-                AppLanguage.HI -> "[Merger] $count Split APKs मिले, एकल APK में मर्ज किया जा रहा है..."
-                AppLanguage.AR -> "[Merger] تم اكتشاف $count ملفات APK مقسمة، جاري دمجها في ملف APK واحد..."
-                AppLanguage.PT -> "[Merger] Detectados $count Split APKs, mesclando em um único APK..."
-                AppLanguage.RU -> "[Merger] Обнаружено $count Split APK, объединение в единый APK..."
-                AppLanguage.JA -> "[Merger] $count 個の分割 APK を検出、単一 APK に統合しています..."
-                AppLanguage.DE -> "[Merger] $count Split-APKs erkannt, führe zu einer einzelnen APK zusammen..."
-                AppLanguage.FR -> "[Merger] $count Split APKs détectés, fusion en un seul APK..."
+                AppLanguage.EN -> "[Merger] Detected $count Split APKs, merging binary structure (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.ZH -> "[Merger] 检测到 $count 个分包 APK，正在合并二进制结构 (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.ES -> "[Merger] Detectados $count Split APKs, fusionando estructura binaria (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.HI -> "[Merger] $count Split APKs मिले, बाइनरी संरचना मर्ज की जा रही है (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.AR -> "[Merger] تم اكتشاف $count ملفات APK مقسمة، جاري دمج البنية الثنائية (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.PT -> "[Merger] Detectados $count Split APKs, mesclando estrutura binária (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.RU -> "[Merger] Обнаружено $count Split APK, объединение бинарной структуры (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.JA -> "[Merger] $count 個の分割 APK を検出、バイナリ構造を統合しています (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.DE -> "[Merger] $count Split-APKs erkannt, führe binäre Struktur zusammen (DEX + resources.arsc + Native Libs + Assets)..."
+                AppLanguage.FR -> "[Merger] $count Split APKs détectés, fusion de la structure binaire (DEX + resources.arsc + Native Libs + Assets)..."
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_17B.matchEntire(raw)?.let { m ->
+            val name = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Merger] + Loaded base APK: $name"
+                AppLanguage.ZH -> "[Merger] + 已加载基础 APK: $name"
+                AppLanguage.ES -> "[Merger] + APK base cargado: $name"
+                AppLanguage.HI -> "[Merger] + बेस APK लोड किया गया: $name"
+                AppLanguage.AR -> "[Merger] + تم تحميل ملف APK الأساسي: $name"
+                AppLanguage.PT -> "[Merger] + APK base carregado: $name"
+                AppLanguage.RU -> "[Merger] + Загружен базовый APK: $name"
+                AppLanguage.JA -> "[Merger] + ベース APK を読み込みました: $name"
+                AppLanguage.DE -> "[Merger] + Basis-APK geladen: $name"
+                AppLanguage.FR -> "[Merger] + APK de base chargé : $name"
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_17C.matchEntire(raw)?.let { m ->
+            val name = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Merger] + Loaded Split APK: $name"
+                AppLanguage.ZH -> "[Merger] + 已加载 Split APK: $name"
+                AppLanguage.ES -> "[Merger] + Split APK cargado: $name"
+                AppLanguage.HI -> "[Merger] + Split APK लोड किया गया: $name"
+                AppLanguage.AR -> "[Merger] + تم تحميل Split APK: $name"
+                AppLanguage.PT -> "[Merger] + Split APK carregado: $name"
+                AppLanguage.RU -> "[Merger] + Загружен Split APK: $name"
+                AppLanguage.JA -> "[Merger] + 分割 APK を読み込みました: $name"
+                AppLanguage.DE -> "[Merger] + Split-APK geladen: $name"
+                AppLanguage.FR -> "[Merger] + Split APK chargé : $name"
                 else -> raw
             }
         }
@@ -2173,36 +2294,114 @@ object AppTranslations {
         }
 
         REGEX_PAT_19.matchEntire(raw)?.let { m ->
-            val kb = m.groupValues[1]
+            val apkCount = m.groupValues[1].takeIf { it.isNotEmpty() }
+            val dexCount = m.groupValues[2].takeIf { it.isNotEmpty() }
+            val kb = m.groupValues[3].takeIf { it.isNotEmpty() }
             return when (lang) {
-                AppLanguage.EN -> "[Merger] Successfully merged Split APKs ($kb KB)."
-                AppLanguage.ZH -> "[Merger] 已成功合并分包 APK ($kb KB)。"
-                AppLanguage.ES -> "[Merger] Split APKs fusionados con éxito ($kb KB)."
-                AppLanguage.HI -> "[Merger] Split APKs सफलतापूर्वक मर्ज किए गए ($kb KB)।"
-                AppLanguage.AR -> "[Merger] تم دمج ملفات APK المقسمة بنجاح ($kb KB)."
-                AppLanguage.PT -> "[Merger] Split APKs mesclados com sucesso ($kb KB)."
-                AppLanguage.RU -> "[Merger] Split APK успешно объединены ($kb KB)."
-                AppLanguage.JA -> "[Merger] 分割 APK の統合が完了しました ($kb KB)。"
-                AppLanguage.DE -> "[Merger] Split-APKs erfolgreich zusammengeführt ($kb KB)."
-                AppLanguage.FR -> "[Merger] Split APKs fusionnés avec succès ($kb KB)."
+                AppLanguage.EN -> if (apkCount != null) {
+                    "[Merger] Successfully merged $apkCount APKs into a single module ($dexCount DEX)."
+                } else {
+                    "[Merger] Successfully merged Split APKs ($kb KB)."
+                }
+                AppLanguage.ZH -> if (apkCount != null) {
+                    "[Merger] 已将 $apkCount 个 APK 完整合并为 1 个独立模块 ($dexCount DEX)。"
+                } else {
+                    "[Merger] 已成功合并分包 APK ($kb KB)。"
+                }
+                AppLanguage.ES -> if (apkCount != null) {
+                    "[Merger] $apkCount APKs fusionados completamente en 1 módulo ($dexCount DEX)."
+                } else {
+                    "[Merger] Split APKs fusionados con éxito ($kb KB)."
+                }
+                AppLanguage.HI -> if (apkCount != null) {
+                    "[Merger] $apkCount APKs को 1 मॉड्यूल ($dexCount DEX) में पूरी तरह मर्ज किया गया।"
+                } else {
+                    "[Merger] Split APKs सफलतापूर्वक मर्ज किए गए ($kb KB)।"
+                }
+                AppLanguage.AR -> if (apkCount != null) {
+                    "[Merger] تم دمج $apkCount ملفات APK بالكامل في وحدة واحدة ($dexCount DEX)."
+                } else {
+                    "[Merger] تم دمج ملفات APK المقسمة بنجاح ($kb KB)."
+                }
+                AppLanguage.PT -> if (apkCount != null) {
+                    "[Merger] $apkCount APKs mesclados em 1 módulo único ($dexCount DEX)."
+                } else {
+                    "[Merger] Split APKs mesclados com sucesso ($kb KB)."
+                }
+                AppLanguage.RU -> if (apkCount != null) {
+                    "[Merger] Полностью объединены $apkCount APK в 1 модуль ($dexCount DEX)."
+                } else {
+                    "[Merger] Split APK успешно объединены ($kb KB)."
+                }
+                AppLanguage.JA -> if (apkCount != null) {
+                    "[Merger] $apkCount 個の APK を 1 つのモジュールに完全統合しました ($dexCount DEX)。"
+                } else {
+                    "[Merger] 分割 APK の統合が完了しました ($kb KB)。"
+                }
+                AppLanguage.DE -> if (apkCount != null) {
+                    "[Merger] $apkCount APKs vollständig zu 1 Modul zusammengeführt ($dexCount DEX)."
+                } else {
+                    "[Merger] Split-APKs erfolgreich zusammengeführt ($kb KB)."
+                }
+                AppLanguage.FR -> if (apkCount != null) {
+                    "[Merger] $apkCount APKs fusionnés en 1 module unique ($dexCount DEX)."
+                } else {
+                    "[Merger] Split APKs fusionnés avec succès ($kb KB)."
+                }
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_19B.matchEntire(raw)?.let { m ->
+            val count = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Merger] + Merged $count Feature Split component(s) into AndroidManifest.xml."
+                AppLanguage.ZH -> "[Merger] + 已将 $count 个 Feature Split 组件合并至 AndroidManifest.xml。"
+                AppLanguage.ES -> "[Merger] + Fusionados $count componente(s) Feature Split en AndroidManifest.xml."
+                AppLanguage.HI -> "[Merger] + AndroidManifest.xml में $count Feature Split घटक मर्ज किए गए।"
+                AppLanguage.AR -> "[Merger] + تم دمج $count مكون Feature Split في AndroidManifest.xml."
+                AppLanguage.PT -> "[Merger] + $count componente(s) Feature Split mesclados no AndroidManifest.xml."
+                AppLanguage.RU -> "[Merger] + Объединено $count компонентов Feature Split в AndroidManifest.xml."
+                AppLanguage.JA -> "[Merger] + $count 個の Feature Split コンポーネントを AndroidManifest.xml に統合しました。"
+                AppLanguage.DE -> "[Merger] + $count Feature Split-Komponente(n) in AndroidManifest.xml integriert."
+                AppLanguage.FR -> "[Merger] + $count composant(s) Feature Split fusionnés dans AndroidManifest.xml."
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_19C.matchEntire(raw)?.let { m ->
+            val abi = m.groupValues[1]
+            val current = m.groupValues[2]
+            val max = m.groupValues[3]
+            return when (lang) {
+                AppLanguage.EN -> "[Merger] + Cleaned incomplete ABI folder 'lib/$abi' ($current/$max .so libs) to prevent UnsatisfiedLinkError."
+                AppLanguage.ZH -> "[Merger] + 已清理不完整的 ABI 目录 'lib/$abi' ($current/$max 个 .so 库) 以避免 UnsatisfiedLinkError 崩溃。"
+                AppLanguage.ES -> "[Merger] + Limpiada carpeta ABI incompleta 'lib/$abi' ($current/$max librerías .so) para evitar UnsatisfiedLinkError."
+                AppLanguage.HI -> "[Merger] + UnsatisfiedLinkError से बचने के लिए अधूरी ABI निर्देशिका 'lib/$abi' ($current/$max .so लाइब्रेरी) साफ़ की गई।"
+                AppLanguage.AR -> "[Merger] + تم تنظيف دليل ABI غير المكتمل 'lib/$abi' ($current/$max مكتبات .so) لتجنب UnsatisfiedLinkError."
+                AppLanguage.PT -> "[Merger] + Limpo diretório ABI incompleto 'lib/$abi' ($current/$max libs .so) para evitar UnsatisfiedLinkError."
+                AppLanguage.RU -> "[Merger] + Очищен неполный каталог ABI 'lib/$abi' ($current/$max библиотек .so) для защиты от UnsatisfiedLinkError."
+                AppLanguage.JA -> "[Merger] + UnsatisfiedLinkError を防ぐため、不完全な ABI ディレクトリ 'lib/$abi' ($current/$max 個の .so) を整理しました。"
+                AppLanguage.DE -> "[Merger] + Unvollständigen ABI-Ordner 'lib/$abi' ($current/$max .so-Libs) bereinigt, um UnsatisfiedLinkError zu verhindern."
+                AppLanguage.FR -> "[Merger] + Dossier ABI incomplet 'lib/$abi' nettoyé ($current/$max libs .so) pour éviter UnsatisfiedLinkError."
                 else -> raw
             }
         }
 
         REGEX_PAT_20.matchEntire(raw)?.let { m ->
-            val obb = m.groupValues[1]
-            val target = m.groupValues[2]
+            val obb = m.groupValues[1].takeIf { it.isNotEmpty() } ?: m.groupValues[3]
+            val target = m.groupValues[2].takeIf { it.isNotEmpty() }
             return when (lang) {
-                AppLanguage.EN -> "[Merger] + Bundled OBB asset: $obb -> $target"
-                AppLanguage.ZH -> "[Merger] + 已整合 OBB 资源: $obb -> $target"
-                AppLanguage.ES -> "[Merger] + Recurso OBB integrado: $obb -> $target"
-                AppLanguage.HI -> "[Merger] + OBB संसाधन एकीकृत: $obb -> $target"
-                AppLanguage.AR -> "[Merger] + تم دمج ملف OBB: $obb -> $target"
-                AppLanguage.PT -> "[Merger] + Recurso OBB integrado: $obb -> $target"
-                AppLanguage.RU -> "[Merger] + Интегрирован ресурс OBB: $obb -> $target"
-                AppLanguage.JA -> "[Merger] + OBB アセットを統合: $obb -> $target"
-                AppLanguage.DE -> "[Merger] + OBB-Ressource integriert: $obb -> $target"
-                AppLanguage.FR -> "[Merger] + Ressource OBB intégrée : $obb -> $target"
+                AppLanguage.EN -> if (target != null) "[Merger] + Bundled OBB asset: $obb -> $target" else "[Merger] + Bundled OBB data: $obb"
+                AppLanguage.ZH -> if (target != null) "[Merger] + 已整合 OBB 资源: $obb -> $target" else "[Merger] + 已合并 OBB 数据: $obb"
+                AppLanguage.ES -> if (target != null) "[Merger] + Recurso OBB integrado: $obb -> $target" else "[Merger] + Datos OBB agrupados: $obb"
+                AppLanguage.HI -> if (target != null) "[Merger] + OBB संसाधन एकीकृत: $obb -> $target" else "[Merger] + OBB डेटा समूहीकृत: $obb"
+                AppLanguage.AR -> if (target != null) "[Merger] + تم دمج ملف OBB: $obb -> $target" else "[Merger] + تجميع بيانات OBB: $obb"
+                AppLanguage.PT -> if (target != null) "[Merger] + Recurso OBB integrado: $obb -> $target" else "[Merger] + Dados OBB agrupados: $obb"
+                AppLanguage.RU -> if (target != null) "[Merger] + Интегрирован ресурс OBB: $obb -> $target" else "[Merger] + Данные OBB объединены: $obb"
+                AppLanguage.JA -> if (target != null) "[Merger] + OBB アセットを統合: $obb -> $target" else "[Merger] + OBB データを結合: $obb"
+                AppLanguage.DE -> if (target != null) "[Merger] + OBB-Ressource integriert: $obb -> $target" else "[Merger] + OBB-Daten zusammengeführt: $obb"
+                AppLanguage.FR -> if (target != null) "[Merger] + Ressource OBB intégrée : $obb -> $target" else "[Merger] + Données OBB regroupées : $obb"
                 else -> raw
             }
         }
@@ -2220,6 +2419,23 @@ object AppTranslations {
                 AppLanguage.JA -> "[Patcher] + $count 個のランチャー Activity に駐車アプリモード (appCategory=game, CAR_LAUNCHER, distractionOptimized) を有効化しました。"
                 AppLanguage.DE -> "[Patcher] + Parked-App-Modus (appCategory=game, CAR_LAUNCHER & distractionOptimized) für $count Launcher-Activity(s) aktiviert."
                 AppLanguage.FR -> "[Patcher] + Mode Parked App activé (appCategory=game, CAR_LAUNCHER & distractionOptimized) pour $count Launcher Activity(s)."
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_21B.matchEntire(raw)?.let { m ->
+            val count = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Patcher] + Normalized $count compressed resource table(s) (Sparse/Compact TypeBlock) to standard format to preserve resource IDs."
+                AppLanguage.ZH -> "[Patcher] + 已将 $count 个压缩资源表 (Sparse/Compact TypeBlock) 规格化为标准格式以保留资源 ID。"
+                AppLanguage.ES -> "[Patcher] + Normalizadas $count tabla(s) de recursos comprimidos (Sparse/Compact TypeBlock) a formato estándar para preservar IDs de recursos."
+                AppLanguage.HI -> "[Patcher] + रिसोर्स ID सुरक्षित रखने के लिए $count संपीड़ित संसाधन तालिकाओं (Sparse/Compact TypeBlock) को मानक प्रारूप में सामान्यीकृत किया गया।"
+                AppLanguage.AR -> "[Patcher] + تم توحيد $count جدول موارد مضغوط (Sparse/Compact TypeBlock) إلى التنسيق القياسي للحفاظ على معرفات الموارد."
+                AppLanguage.PT -> "[Patcher] + Normalizadas $count tabela(s) de recursos compactadas (Sparse/Compact TypeBlock) para o formato padrão para preservar os IDs dos recursos."
+                AppLanguage.RU -> "[Patcher] + Нормализовано $count сжатых таблиц ресурсов (Sparse/Compact TypeBlock) в стандартный формат для сохранения ID ресурсов."
+                AppLanguage.JA -> "[Patcher] + リソース ID を保持するため、$count 個の圧縮リソーステーブル (Sparse/Compact TypeBlock) を標準形式に正規化しました。"
+                AppLanguage.DE -> "[Patcher] + $count komprimierte Ressourcentabelle(n) (Sparse/Compact TypeBlock) in das Standardformat konvertiert, um Ressourcen-IDs zu erhalten."
+                AppLanguage.FR -> "[Patcher] + Normalisation de $count table(s) de ressources compressées (Sparse/Compact TypeBlock) au format standard pour préserver les ID de ressources."
                 else -> raw
             }
         }
@@ -2280,16 +2496,33 @@ object AppTranslations {
         REGEX_PAT_25.matchEntire(raw)?.let { m ->
             val count = m.groupValues[1]
             return when (lang) {
-                AppLanguage.EN -> "[Patcher] + Stripped $count Split APK requirement attributes/meta-data (prevents INSTALL_FAILED_MISSING_SPLIT)."
-                AppLanguage.ZH -> "[Patcher] + 已移除 $count 个分包强制属性/元数据 (防止 INSTALL_FAILED_MISSING_SPLIT 错误)。"
-                AppLanguage.ES -> "[Patcher] + Eliminados $count atributos/meta-data de Split APK (evita INSTALL_FAILED_MISSING_SPLIT)."
-                AppLanguage.HI -> "[Patcher] + $count Split APK आवश्यक गुण/मेटा-डेटा हटाए गए (INSTALL_FAILED_MISSING_SPLIT से बचाव)।"
-                AppLanguage.AR -> "[Patcher] + تمت إزالة $count من سمات/بيانات Split APK الإلزامية (لمنع خطأ INSTALL_FAILED_MISSING_SPLIT)."
-                AppLanguage.PT -> "[Patcher] + Removidos $count atributos/meta-data de Split APK (evita INSTALL_FAILED_MISSING_SPLIT)."
-                AppLanguage.RU -> "[Patcher] + Удалено $count атрибутов/метаданных Split APK (защита от INSTALL_FAILED_MISSING_SPLIT)."
-                AppLanguage.JA -> "[Patcher] + $count 個の分割 APK 必須属性/メタデータを削除しました (INSTALL_FAILED_MISSING_SPLIT 防止)。"
-                AppLanguage.DE -> "[Patcher] + $count Split-APK-Pflichtattribute/Metadaten entfernt (verhindert INSTALL_FAILED_MISSING_SPLIT)."
-                AppLanguage.FR -> "[Patcher] + Suppression de $count attributs/méta-données Split APK (évite INSTALL_FAILED_MISSING_SPLIT)."
+                AppLanguage.EN -> "[Patcher] + Safely stripped $count Split APK attributes/meta-data (preserving shared resources)."
+                AppLanguage.ZH -> "[Patcher] + 已安全移除 $count 个分包属性/元数据 (保留共享资源)。"
+                AppLanguage.ES -> "[Patcher] + Eliminados de forma segura $count atributos/metadatos de Split APK (preservando recursos compartidos)."
+                AppLanguage.HI -> "[Patcher] + $count Split APK गुण/मेटा-डेटा सुरक्षित रूप से हटाए गए (साझा संसाधन सुरक्षित)।"
+                AppLanguage.AR -> "[Patcher] + تمت إزالة $count من سمات/بيانات Split APK بأمان (مع الحفاظ على الموارد المشتركة)."
+                AppLanguage.PT -> "[Patcher] + Removidos com segurança $count atributos/metadados de Split APK (preservando recursos compartilhados)."
+                AppLanguage.RU -> "[Patcher] + Безопасно очищено $count атрибутов/метаданных Split APK (с сохранением общих ресурсов)."
+                AppLanguage.JA -> "[Patcher] + $count 個の分割 APK 属性/メタデータを安全に削除しました (共有リソースを保持)。"
+                AppLanguage.DE -> "[Patcher] + $count Split-APK-Attribute/Metadaten sicher bereinigt (geteilte Ressourcen bleiben erhalten)."
+                AppLanguage.FR -> "[Patcher] + Suppression sécurisée de $count attributs/méta-données Split APK (ressources partagées conservées)."
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_25B.matchEntire(raw)?.let { m ->
+            val count = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Patcher] + Disabled $count Play Licensing check component(s)."
+                AppLanguage.ZH -> "[Patcher] + 已禁用 $count 个 Play 授权验证组件。"
+                AppLanguage.ES -> "[Patcher] + Desactivados $count componente(s) de verificación de licencia de Google Play."
+                AppLanguage.HI -> "[Patcher] + $count Play लाइसेंसिंग जाँच घटक अक्षम किए गए।"
+                AppLanguage.AR -> "[Patcher] + تم تعطيل $count من مكونات فحص ترخيص Play."
+                AppLanguage.PT -> "[Patcher] + Desativados $count componente(s) de verificação de licença do Google Play."
+                AppLanguage.RU -> "[Patcher] + Отключено $count компонентов проверки лицензии Play Licensing."
+                AppLanguage.JA -> "[Patcher] + $count 個の Play ライセンス確認コンポーネントを無効化しました。"
+                AppLanguage.DE -> "[Patcher] + $count Play Licensing-Prüfkomponente(n) deaktiviert."
+                AppLanguage.FR -> "[Patcher] + $count composant(s) de vérification de licence Play désactivé(s)."
                 else -> raw
             }
         }
@@ -2350,16 +2583,16 @@ object AppTranslations {
             val resId = m.groupValues[1]
             val xmlPath = m.groupValues[2]
             return when (lang) {
-                AppLanguage.EN -> "[Patcher] + Allocated Resource ID $resId -> $xmlPath"
-                AppLanguage.ZH -> "[Patcher] + 已分配资源 ID $resId -> $xmlPath"
-                AppLanguage.ES -> "[Patcher] + ID de recurso asignado $resId -> $xmlPath"
-                AppLanguage.HI -> "[Patcher] + आवंटित रिसोर्स ID $resId -> $xmlPath"
-                AppLanguage.AR -> "[Patcher] + تم تخصيص معرف المورد $resId -> $xmlPath"
-                AppLanguage.PT -> "[Patcher] + Resource ID alocado $resId -> $xmlPath"
-                AppLanguage.RU -> "[Patcher] + Выделен Resource ID $resId -> $xmlPath"
-                AppLanguage.JA -> "[Patcher] + リソース ID $resId -> $xmlPath を割り当てました"
-                AppLanguage.DE -> "[Patcher] + Resource-ID $resId -> $xmlPath zugewiesen"
-                AppLanguage.FR -> "[Patcher] + ID de ressource alloué $resId -> $xmlPath"
+                AppLanguage.EN -> "[Patcher] + Allocated Resource ID @0x$resId -> $xmlPath"
+                AppLanguage.ZH -> "[Patcher] + 已分配资源 ID @0x$resId -> $xmlPath"
+                AppLanguage.ES -> "[Patcher] + ID de recurso asignado @0x$resId -> $xmlPath"
+                AppLanguage.HI -> "[Patcher] + आवंटित रिसोर्स ID @0x$resId -> $xmlPath"
+                AppLanguage.AR -> "[Patcher] + تم تخصيص معرف المورد @0x$resId -> $xmlPath"
+                AppLanguage.PT -> "[Patcher] + Resource ID alocado @0x$resId -> $xmlPath"
+                AppLanguage.RU -> "[Patcher] + Выделен Resource ID @0x$resId -> $xmlPath"
+                AppLanguage.JA -> "[Patcher] + リソース ID @0x$resId -> $xmlPath を割り当てました"
+                AppLanguage.DE -> "[Patcher] + Resource-ID @0x$resId -> $xmlPath zugewiesen"
+                AppLanguage.FR -> "[Patcher] + ID de ressource alloué @0x$resId -> $xmlPath"
                 else -> raw
             }
         }
@@ -2417,18 +2650,35 @@ object AppTranslations {
 
         REGEX_PAT_33.matchEntire(raw)?.let { m ->
             val dexName = m.groupValues[1]
-            val kb = m.groupValues[2]
+            val sizeInfo = m.groupValues[2]
             return when (lang) {
-                AppLanguage.EN -> "[Patcher] + Injected Universal AA Runtime DEX as '$dexName' ($kb KB)."
-                AppLanguage.ZH -> "[Patcher] + 已注入通用 AA 运行时 DEX 为 '$dexName' ($kb KB)。"
-                AppLanguage.ES -> "[Patcher] + Inyectado Universal AA Runtime DEX como '$dexName' ($kb KB)."
-                AppLanguage.HI -> "[Patcher] + Universal AA Runtime DEX को '$dexName' ($kb KB) के रूप में इंजेक्ट किया गया।"
-                AppLanguage.AR -> "[Patcher] + تم حقن Universal AA Runtime DEX باسم '$dexName' ($kb KB)."
-                AppLanguage.PT -> "[Patcher] + Injetado Universal AA Runtime DEX como '$dexName' ($kb KB)."
-                AppLanguage.RU -> "[Patcher] + Внедрен Universal AA Runtime DEX как '$dexName' ($kb KB)."
-                AppLanguage.JA -> "[Patcher] + Universal AA Runtime DEX を '$dexName' ($kb KB) として注入しました。"
-                AppLanguage.DE -> "[Patcher] + Universal AA Runtime DEX als '$dexName' ($kb KB) injiziert."
-                AppLanguage.FR -> "[Patcher] + DEX Universal AA Runtime injecté sous '$dexName' ($kb KB)."
+                AppLanguage.EN -> "[Patcher] + Injected DEX as '$dexName' ($sizeInfo)."
+                AppLanguage.ZH -> "[Patcher] + 已注入 DEX 为 '$dexName' ($sizeInfo)。"
+                AppLanguage.ES -> "[Patcher] + DEX inyectado como '$dexName' ($sizeInfo)."
+                AppLanguage.HI -> "[Patcher] + DEX को '$dexName' ($sizeInfo) के रूप में इंजेक्ट किया गया।"
+                AppLanguage.AR -> "[Patcher] + تم حقن DEX باسم '$dexName' ($sizeInfo)."
+                AppLanguage.PT -> "[Patcher] + DEX injetado como '$dexName' ($sizeInfo)."
+                AppLanguage.RU -> "[Patcher] + Внедрен DEX как '$dexName' ($sizeInfo)."
+                AppLanguage.JA -> "[Patcher] + DEX を '$dexName' ($sizeInfo) として注入しました。"
+                AppLanguage.DE -> "[Patcher] + DEX als '$dexName' ($sizeInfo) injiziert."
+                AppLanguage.FR -> "[Patcher] + DEX injecté sous '$dexName' ($sizeInfo)."
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_33B.matchEntire(raw)?.let { m ->
+            val count = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Patcher] + Packaged $count Isolated Car Runtime chunk(s) into assets/aa_car_res.dat."
+                AppLanguage.ZH -> "[Patcher] + 已将 $count 个隔离的车载运行时分段打包至 assets/aa_car_res.dat。"
+                AppLanguage.ES -> "[Patcher] + Empaquetados $count fragmento(s) de Isolated Car Runtime en assets/aa_car_res.dat."
+                AppLanguage.HI -> "[Patcher] + $count पृथक कार रनटाइम सेगमेंट assets/aa_car_res.dat में पैक किए गए।"
+                AppLanguage.AR -> "[Patcher] + تم حزم $count جزء من بيئة تشغيل السيارة المعزولة في assets/aa_car_res.dat."
+                AppLanguage.PT -> "[Patcher] + Empacotados $count fragmento(s) do Isolated Car Runtime em assets/aa_car_res.dat."
+                AppLanguage.RU -> "[Patcher] + Упаковано $count фрагментов изолированной среды авто в assets/aa_car_res.dat."
+                AppLanguage.JA -> "[Patcher] + $count 個の独立した車載ランタイムチャンクを assets/aa_car_res.dat にパッケージ化しました。"
+                AppLanguage.DE -> "[Patcher] + $count isolierte Car-Runtime-Chunk(s) in assets/aa_car_res.dat gepackt."
+                AppLanguage.FR -> "[Patcher] + $count segment(s) Isolated Car Runtime compressé(s) dans assets/aa_car_res.dat."
                 else -> raw
             }
         }
@@ -2446,6 +2696,41 @@ object AppTranslations {
                 AppLanguage.JA -> "[Patcher] DEX 注入時の警告: $err"
                 AppLanguage.DE -> "[Patcher] Warnung beim Injizieren von DEX: $err"
                 AppLanguage.FR -> "[Patcher] Avertissement lors de l'injection DEX : $err"
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_SIGNER_PREPARE.matchEntire(raw)?.let { m ->
+            val minSdk = m.groupValues[1].takeIf { it.isNotEmpty() }
+            val suffix = if (minSdk != null) ", minSdk=$minSdk" else ""
+            return when (lang) {
+                AppLanguage.EN -> "[Signer] Preparing RSA-2048 key & X.509 certificate to sign APK (Scheme V1 + V2 + V3$suffix)..."
+                AppLanguage.ZH -> "[Signer] 正在准备 RSA-2048 密钥与 X.509 证书以签名 APK (V1 + V2 + V3 方案$suffix)..."
+                AppLanguage.ES -> "[Signer] Preparando clave RSA-2048 y certificado X.509 para firmar APK (Esquema V1 + V2 + V3$suffix)..."
+                AppLanguage.HI -> "[Signer] APK साइन करने के लिए RSA-2048 कुंजी और X.509 प्रमाणपत्र तैयार किया जा रहा है (V1 + V2 + V3$suffix)..."
+                AppLanguage.AR -> "[Signer] جاري تحضير مفتاح RSA-2048 وشهادة X.509 لتوقيع APK (V1 + V2 + V3$suffix)..."
+                AppLanguage.PT -> "[Signer] Preparando chave RSA-2048 e certificado X.509 para assinar o APK (Scheme V1 + V2 + V3$suffix)..."
+                AppLanguage.RU -> "[Signer] Подготовка ключа RSA-2048 и сертификата X.509 для подписи APK (V1 + V2 + V3$suffix)..."
+                AppLanguage.JA -> "[Signer] APK 署名用の RSA-2048 鍵と X.509 証明書を準備中 (V1 + V2 + V3$suffix)..."
+                AppLanguage.DE -> "[Signer] Bereite RSA-2048-Schlüssel & X.509-Zertifikat zum Signieren vor (V1 + V2 + V3$suffix)..."
+                AppLanguage.FR -> "[Signer] Préparation de la clé RSA-2048 et du certificat X.509 pour signer l'APK (V1 + V2 + V3$suffix)..."
+                else -> raw
+            }
+        }
+
+        REGEX_PAT_SIGNATURE_WARNING.matchEntire(raw)?.let { m ->
+            val marker = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "[Patcher] ! Warning: Detected Native/C++ signature check mechanism ($marker) — if app closes upon launch after APK resigning, enable LSPosed (CorePatch / Signature Spoofing) or use an untouched DRM-free APK."
+                AppLanguage.ZH -> "[Patcher] ! 警告: 检测到 Native/C++ 层原始签名验证机制 ($marker) — 若重签后应用启动闪退，需要开启 LSPosed (CorePatch / 签名伪装) 或使用未经过 DRM 保护的原生安装包。"
+                AppLanguage.ES -> "[Patcher] ! Advertencia: Detectada verificación de firma a nivel Native/C++ ($marker) — si la app se cierra tras la firma, use LSPosed (CorePatch / Signature Spoofing) o un APK sin DRM."
+                AppLanguage.HI -> "[Patcher] ! चेतावनी: Native/C++ सिग्नेचर जाँच तंत्र ($marker) का पता चला — यदि ऐप री-साइन के बाद बंद हो जाता है, तो LSPosed (CorePatch) सक्षम करें या मूल DRM-मुक्त APK का उपयोग करें।"
+                AppLanguage.AR -> "[Patcher] ! تحذير: تم اكتشاف آلية التحقق من التوقيع Native/C++ ($marker) — إذا توقف التطبيق بعد إعادة التوقيع، يُرجى تفعيل LSPosed (CorePatch) أو استخدام APK أصلي بدون حماية DRM."
+                AppLanguage.PT -> "[Patcher] ! Aviso: Detectado mecanismo de verificação de assinatura Native/C++ ($marker) — se o app fechar após a assinatura, ative o LSPosed (CorePatch) ou use um APK sem DRM."
+                AppLanguage.RU -> "[Patcher] ! Предупреждение: Обнаружена проверка подписи уровня Native/C++ ($marker) — если приложение вылетает после переподписи, включите LSPosed (CorePatch) или используйте чистый APK без DRM."
+                AppLanguage.JA -> "[Patcher] ! 警告: Native/C++ レベルの署名検証機構 ($marker) を検出 — 再署名後にアプリが起動直後終了する場合は LSPosed (CorePatch) を有効にするか DRM のない APK を使用してください。"
+                AppLanguage.DE -> "[Patcher] ! Warnung: Native/C++-Signaturprüfungsmechanismus ($marker) erkannt — falls App nach Neusignierung schließt, LSPosed (CorePatch) nutzen oder DRM-freie APK verwenden."
+                AppLanguage.FR -> "[Patcher] ! Avertissement : Mécanisme de vérification de signature Native/C++ ($marker) détecté — si l'application plante au lancement, activez LSPosed (CorePatch) ou utilisez un APK sans DRM."
                 else -> raw
             }
         }

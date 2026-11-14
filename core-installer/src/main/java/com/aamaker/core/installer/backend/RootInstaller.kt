@@ -2,6 +2,7 @@ package com.aamaker.core.installer.backend
 
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.installer.model.InstallResult
+import com.aamaker.core.installer.util.PlayProtectSnapshot
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -58,23 +59,31 @@ class RootInstaller {
             }
 
             onLog("[Root] Đang cài đặt với nguồn com.android.vending...")
+            var playProtectSnapshot: PlayProtectSnapshot? = null
             try {
-                Shell.cmd(
-                    "settings put global verifier_verify_adb_installs 0",
-                    "settings put global package_verifier_enable 0",
-                    "settings put global package_verifier_user_consent -1"
-                ).exec()
+                val backupRes = Shell.cmd(PlayProtectSnapshot.buildBackupAndDisableShellCommand()).exec()
+                playProtectSnapshot = PlayProtectSnapshot.parseSnapshot(backupRes.out)
             } catch (_: Throwable) {
             }
-            val installResult = if (remoteTmpPaths.size == 1) {
-                Shell.cmd(
-                    "pm install -r -d -i com.android.vending --user 0 \"${remoteTmpPaths.first()}\""
-                ).exec()
-            } else {
-                val joinedPaths = remoteTmpPaths.joinToString(" ") { "\"$it\"" }
-                Shell.cmd(
-                    "pm install-multiple -r -d -i com.android.vending --user 0 $joinedPaths"
-                ).exec()
+            val installResult = try {
+                if (remoteTmpPaths.size == 1) {
+                    Shell.cmd(
+                        "pm install -r -d -i com.android.vending --user 0 \"${remoteTmpPaths.first()}\""
+                    ).exec()
+                } else {
+                    val joinedPaths = remoteTmpPaths.joinToString(" ") { "\"$it\"" }
+                    Shell.cmd(
+                        "pm install-multiple -r -d -i com.android.vending --user 0 $joinedPaths"
+                    ).exec()
+                }
+            } finally {
+                playProtectSnapshot?.let { snapshot ->
+                    try {
+                        Shell.cmd(snapshot.buildRestoreShellCommand()).exec()
+                        onLog("[Root] Đã khôi phục trạng thái Play Protect ban đầu.")
+                    } catch (_: Throwable) {
+                    }
+                }
             }
 
             remoteTmpPaths.forEach { Shell.cmd("rm -f \"$it\"").exec() }
@@ -83,7 +92,8 @@ class RootInstaller {
             onLog("[Root] Kết quả pm install: $output")
 
             if (!installResult.isSuccess || !output.contains("Success", ignoreCase = true)) {
-                return@withContext InstallResult.Error("Lỗi pm install qua Root: $output")
+                val hint = buildConflictHint(output)
+                return@withContext InstallResult.Error("Lỗi pm install qua Root: $output$hint")
             }
 
             if (autoGrantPermissions) {
@@ -112,6 +122,19 @@ class RootInstaller {
             remoteTmpPaths.forEach { Shell.cmd("rm -f \"$it\"").exec() }
             onLog("[Root] Ngoại lệ: ${e.message}")
             InstallResult.Error("Lỗi cài đặt qua Root: ${e.message}", e)
+        }
+    }
+
+    private fun buildConflictHint(output: String): String {
+        val upper = output.uppercase()
+        return if (
+            upper.contains("UPDATE_INCOMPATIBLE") ||
+            upper.contains("CONFLICTING_PROVIDER") ||
+            upper.contains("DUPLICATE_PERMISSION")
+        ) {
+            "\nGợi ý: Ứng dụng gốc trên máy có chữ ký khác (Play Store). Hãy gỡ cài đặt bản gốc trước khi cài đè, hoặc bấm nút Tạo ngẫu nhiên (Shuffle) để đổi Package Name cài song song."
+        } else {
+            ""
         }
     }
 }
