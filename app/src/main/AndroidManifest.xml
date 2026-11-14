@@ -2,11 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <permission
-        android:name="com.aamaker.permission.COMMAND_BRIDGE"
-        android:protectionLevel="normal" />
-
-    <uses-permission android:name="com.aamaker.permission.COMMAND_BRIDGE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission
@@ -59,8 +54,7 @@
         <receiver
             android:name=".input.AAMakerCommandBridgeReceiver"
             android:enabled="true"
-            android:exported="true"
-            android:permission="com.aamaker.permission.COMMAND_BRIDGE">
+            android:exported="true">
             <intent-filter>
                 <action android:name="com.aamaker.action.LAUNCH_ON_DISPLAY" />
                 <action android:name="com.aamaker.action.INJECT_TOUCH" />

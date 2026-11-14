@@ -29,19 +29,19 @@ class AAMakerPatcherPipeline(private val context: Context) {
             onLog("Ứng dụng gốc: ${config.appName} (${config.originalPackageName})")
             onLog("Chế độ Patch: ${config.strategy.title}")
 
-            val unsignedApk = File(workDir, "unsigned_patched.apk")
-            val outcome = splitMerger.prepareApkModule(
+            val singleInputApk = splitMerger.prepareSingleApk(
                 inputFiles = config.sourceApkFiles,
                 workDir = workDir,
                 onLog = onLog
-            ).use { session ->
-                manifestPatcher.patchApkModule(
-                    apkModule = session.apkModule,
-                    outputUnsignedApk = unsignedApk,
-                    config = config,
-                    onLog = onLog
-                )
-            }
+            )
+
+            val unsignedApk = File(workDir, "unsigned_patched.apk")
+            val dexInjected = manifestPatcher.patchApkBinary(
+                inputApk = singleInputApk,
+                outputUnsignedApk = unsignedApk,
+                config = config,
+                onLog = onLog
+            )
 
             val finalPkg = config.customPackageName?.takeIf { it.isNotBlank() } ?: config.originalPackageName
             val finalAppName = config.customAppName?.takeIf { it.isNotBlank() } ?: config.appName
@@ -51,8 +51,7 @@ class AAMakerPatcherPipeline(private val context: Context) {
             apkSigner.signApk(
                 unsignedApk = unsignedApk,
                 signedOutputApk = signedApkFile,
-                onLog = onLog,
-                minSdkVersion = outcome.minSdkVersion
+                onLog = onLog
             )
 
             val elapsed = System.currentTimeMillis() - startTime
@@ -63,7 +62,7 @@ class AAMakerPatcherPipeline(private val context: Context) {
                 outputApkFile = signedApkFile,
                 finalPackageName = finalPkg,
                 finalAppName = finalAppName,
-                dexInjected = outcome.dexInjected,
+                dexInjected = dexInjected,
                 elapsedMs = elapsed
             )
         } catch (e: Throwable) {

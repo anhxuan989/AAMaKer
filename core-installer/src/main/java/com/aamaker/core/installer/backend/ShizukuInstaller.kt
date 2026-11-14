@@ -3,7 +3,6 @@ package com.aamaker.core.installer.backend
 import android.content.pm.PackageManager
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.installer.model.InstallResult
-import com.aamaker.core.installer.util.PlayProtectSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
@@ -62,94 +61,80 @@ class ShizukuInstaller {
             val stderr: String
             val exitCode: Int
 
-            var playProtectSnapshot: PlayProtectSnapshot? = null
             try {
-                val backupProc = createShizukuProcess(
+                createShizukuProcess(
                     arrayOf(
                         "sh",
                         "-c",
-                        PlayProtectSnapshot.buildBackupAndDisableShellCommand()
+                        "settings put global verifier_verify_adb_installs 0; " +
+                            "settings put global package_verifier_enable 0; " +
+                            "settings put global package_verifier_user_consent -1"
                     )
-                )
-                val backupLines = BufferedReader(InputStreamReader(backupProc.inputStream)).readLines()
-                backupProc.waitFor()
-                playProtectSnapshot = PlayProtectSnapshot.parseSnapshot(backupLines)
+                ).waitFor()
             } catch (_: Throwable) {
             }
 
-            try {
-                if (apkFiles.size == 1) {
-                    val apkFile = apkFiles.first()
-                    val fileSize = apkFile.length()
-                    onLog("[Shizuku] Thực thi: pm install-create -r -i com.android.vending --user 0 -S $fileSize")
+            if (apkFiles.size == 1) {
+                val apkFile = apkFiles.first()
+                val fileSize = apkFile.length()
+                onLog("[Shizuku] Thực thi: pm install-create -r -i com.android.vending --user 0 -S $fileSize")
 
-                    val createCmd = arrayOf(
-                        "sh", "-c",
-                        "pm install -r -d -i com.android.vending --user 0 -S $fileSize"
+                val createCmd = arrayOf(
+                    "sh", "-c",
+                    "pm install -r -d -i com.android.vending --user 0 -S $fileSize"
+                )
+                val process = createShizukuProcess(createCmd)
+
+                FileInputStream(apkFile).use { fis ->
+                    process.outputStream.use { os ->
+                        fis.copyTo(os, bufferSize = 64 * 1024)
+                        os.flush()
+                    }
+                }
+
+                stdout = BufferedReader(InputStreamReader(process.inputStream)).readText().trim()
+                stderr = BufferedReader(InputStreamReader(process.errorStream)).readText().trim()
+                exitCode = process.waitFor()
+            } else {
+                onLog("[Shizuku] Thực thi: pm install-create -r -d -i com.android.vending --user 0 (${apkFiles.size} APKs)")
+                val createProc = createShizukuProcess(
+                    arrayOf("sh", "-c", "pm install-create -r -d -i com.android.vending --user 0")
+                )
+                val createOut = BufferedReader(InputStreamReader(createProc.inputStream)).readText().trim()
+                val createErr = BufferedReader(InputStreamReader(createProc.errorStream)).readText().trim()
+                createProc.waitFor()
+
+                val sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
+                    ?: return@withContext InstallResult.Error("Cài đặt qua Shizuku thất bại: $createOut $createErr")
+
+                apkFiles.forEachIndexed { idx, file ->
+                    val size = file.length()
+                    val splitName = "split_${idx}_${file.name.replace(SAFE_SPLIT_NAME_REGEX, "_")}"
+                    onLog("[Shizuku] Thực thi: pm install-write -S $size $sessionId $splitName -")
+                    val writeProc = createShizukuProcess(
+                        arrayOf("sh", "-c", "pm install-write -S $size $sessionId $splitName -")
                     )
-                    val process = createShizukuProcess(createCmd)
-
-                    FileInputStream(apkFile).use { fis ->
-                        process.outputStream.use { os ->
+                    FileInputStream(file).use { fis ->
+                        writeProc.outputStream.use { os ->
                             fis.copyTo(os, bufferSize = 64 * 1024)
                             os.flush()
                         }
                     }
-
-                    stdout = BufferedReader(InputStreamReader(process.inputStream)).readText().trim()
-                    stderr = BufferedReader(InputStreamReader(process.errorStream)).readText().trim()
-                    exitCode = process.waitFor()
-                } else {
-                    onLog("[Shizuku] Thực thi: pm install-create -r -d -i com.android.vending --user 0 (${apkFiles.size} APKs)")
-                    val createProc = createShizukuProcess(
-                        arrayOf("sh", "-c", "pm install-create -r -d -i com.android.vending --user 0")
-                    )
-                    val createOut = BufferedReader(InputStreamReader(createProc.inputStream)).readText().trim()
-                    val createErr = BufferedReader(InputStreamReader(createProc.errorStream)).readText().trim()
-                    createProc.waitFor()
-
-                    val sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
-                        ?: return@withContext InstallResult.Error("Cài đặt qua Shizuku thất bại: $createOut $createErr")
-
-                    apkFiles.forEachIndexed { idx, file ->
-                        val size = file.length()
-                        val splitName = "split_${idx}_${file.name.replace(SAFE_SPLIT_NAME_REGEX, "_")}"
-                        onLog("[Shizuku] Thực thi: pm install-write -S $size $sessionId $splitName -")
-                        val writeProc = createShizukuProcess(
-                            arrayOf("sh", "-c", "pm install-write -S $size $sessionId $splitName -")
-                        )
-                        FileInputStream(file).use { fis ->
-                            writeProc.outputStream.use { os ->
-                                fis.copyTo(os, bufferSize = 64 * 1024)
-                                os.flush()
-                            }
-                        }
-                        val writeOut = BufferedReader(InputStreamReader(writeProc.inputStream)).readText().trim()
-                        val writeErr = BufferedReader(InputStreamReader(writeProc.errorStream)).readText().trim()
-                        val writeExit = writeProc.waitFor()
-                        if (writeExit != 0 || !writeOut.contains("Success", ignoreCase = true)) {
-                            createShizukuProcess(arrayOf("sh", "-c", "pm install-abandon $sessionId")).waitFor()
-                            return@withContext InstallResult.Error("Cài đặt qua Shizuku thất bại: $writeOut $writeErr")
-                        }
-                    }
-
-                    val commitProc = createShizukuProcess(
-                        arrayOf("sh", "-c", "pm install-commit $sessionId")
-                    )
-                    stdout = BufferedReader(InputStreamReader(commitProc.inputStream)).readText().trim()
-                    stderr = BufferedReader(InputStreamReader(commitProc.errorStream)).readText().trim()
-                    exitCode = commitProc.waitFor()
-                }
-            } finally {
-                playProtectSnapshot?.let { snapshot ->
-                    try {
-                        createShizukuProcess(
-                            arrayOf("sh", "-c", snapshot.buildRestoreShellCommand())
-                        ).waitFor()
-                        onLog("[Shizuku] Đã khôi phục trạng thái Play Protect ban đầu.")
-                    } catch (_: Throwable) {
+                    val writeOut = BufferedReader(InputStreamReader(writeProc.inputStream)).readText().trim()
+                    val writeErr = BufferedReader(InputStreamReader(writeProc.errorStream)).readText().trim()
+                    val writeExit = writeProc.waitFor()
+                    if (writeExit != 0 || !writeOut.contains("Success", ignoreCase = true)) {
+                        createShizukuProcess(arrayOf("sh", "-c", "pm install-abandon $sessionId")).waitFor()
+                        return@withContext InstallResult.Error("Cài đặt qua Shizuku thất bại: $writeOut $writeErr")
                     }
                 }
+
+                val commitProc = createShizukuProcess(
+                    arrayOf("sh", "-c", "pm install-commit $sessionId")
+                )
+                stdout = BufferedReader(InputStreamReader(commitProc.inputStream)).readText().trim()
+                stderr = BufferedReader(InputStreamReader(commitProc.errorStream)).readText().trim()
+                exitCode = commitProc.waitFor()
             }
 
             onLog("[Shizuku] Kết quả: $stdout $stderr (ExitCode=$exitCode)")
@@ -180,9 +165,7 @@ class ShizukuInstaller {
                     message = "Cài đặt qua Shizuku thành công với nguồn Google Play Store!"
                 )
             } else {
-                val combined = "$stdout $stderr".trim()
-                val hint = buildConflictHint(combined)
-                InstallResult.Error("Cài đặt qua Shizuku thất bại: $combined$hint")
+                InstallResult.Error("Cài đặt qua Shizuku thất bại: $stdout $stderr")
             }
         } catch (e: Exception) {
             onLog("[Shizuku] Ngoại lệ: ${e.message}")
@@ -208,18 +191,5 @@ class ShizukuInstaller {
     companion object {
         private val SESSION_ID_REGEX = Regex("""\[(\d+)]""")
         private val SAFE_SPLIT_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
-
-        private fun buildConflictHint(output: String): String {
-            val upper = output.uppercase()
-            return if (
-                upper.contains("UPDATE_INCOMPATIBLE") ||
-                upper.contains("CONFLICTING_PROVIDER") ||
-                upper.contains("DUPLICATE_PERMISSION")
-            ) {
-                "\nGợi ý: Ứng dụng gốc trên máy có chữ ký khác (Play Store). Hãy gỡ cài đặt bản gốc trước khi cài đè, hoặc bấm nút Tạo ngẫu nhiên (Shuffle) để đổi Package Name cài song song."
-            } else {
-                ""
-            }
-        }
     }
 }

@@ -1,6 +1,3 @@
-import java.util.jar.JarEntry
-import java.util.jar.JarFile
-import java.util.jar.JarOutputStream
 import java.util.zip.GZIPOutputStream
 
 plugins {
@@ -57,7 +54,6 @@ val generateStubDex by tasks.registering {
             if (org.gradle.internal.os.OperatingSystem.current().isWindows) "d8.bat" else "d8"
         )
         val outDir = outputAssetsDir.get().asFile
-        outDir.deleteRecursively()
         outDir.mkdirs()
 
         val tempJarsDir = File(layout.buildDirectory.get().asFile, "tmp/stub_dex_jars").apply {
@@ -65,55 +61,8 @@ val generateStubDex by tasks.registering {
             mkdirs()
         }
 
-        val bootstrapJar = File(tempJarsDir, "bootstrap_only.jar")
-        val runtimeImplJar = File(tempJarsDir, "runtime_impl.jar")
-        JarFile(inputStubJar.get().asFile).use { srcJar ->
-            JarOutputStream(bootstrapJar.outputStream().buffered()).use { bootOut ->
-                JarOutputStream(runtimeImplJar.outputStream().buffered()).use { implOut ->
-                    val entries = srcJar.entries()
-                    while (entries.hasMoreElements()) {
-                        val entry = entries.nextElement()
-                        if (entry.isDirectory) continue
-                        val name = entry.name
-                        val isBootstrapClass =
-                            name == "com/aamaker/stub/runtime/AAMakerCarAppService.class" ||
-                            (name.startsWith("com/aamaker/stub/runtime/AAMakerCarAppService$") && name.endsWith(".class"))
-                        val targetOut = if (isBootstrapClass) bootOut else implOut
-                        targetOut.putNextEntry(JarEntry(name))
-                        srcJar.getInputStream(entry).use { it.copyTo(targetOut) }
-                        targetOut.closeEntry()
-                    }
-                }
-            }
-        }
-
-        val androidJar = File(sdkDir, "platforms/android-35/android.jar")
-        val bootstrapOutDir = File(tempJarsDir, "bootstrap_dex_out").apply { mkdirs() }
-        val bootCmd = mutableListOf(
-            d8Executable.absolutePath,
-            "--min-api", "26",
-            "--output", bootstrapOutDir.absolutePath
-        )
-        if (androidJar.exists()) {
-            bootCmd.add("--lib")
-            bootCmd.add(androidJar.absolutePath)
-        }
-        bootCmd.add(bootstrapJar.absolutePath)
-
-        val bootProc = ProcessBuilder(bootCmd).redirectErrorStream(true).start()
-        val bootLog = bootProc.inputStream.bufferedReader().readText()
-        if (bootProc.waitFor() != 0) {
-            throw GradleException("Lỗi khi chạy d8 tạo aa_bootstrap_stub.dex: $bootLog")
-        }
-        val bootClassesDex = File(bootstrapOutDir, "classes.dex")
-        if (!bootClassesDex.exists()) {
-            throw GradleException("Không tìm thấy classes.dex cho aa_bootstrap_stub.dex")
-        }
-        bootClassesDex.copyTo(File(outDir, "aa_bootstrap_stub.dex"), overwrite = true)
-
         val jarInputs = mutableListOf<String>()
-        jarInputs.add(runtimeImplJar.absolutePath)
-        jarInputs.add(bootstrapJar.absolutePath)
+        jarInputs.add(inputStubJar.get().asFile.absolutePath)
 
         val seenModules = mutableSetOf<String>()
         stubDexCompile.resolvedConfiguration.resolvedArtifacts.forEachIndexed { idx, artifact ->
@@ -139,37 +88,27 @@ val generateStubDex by tasks.registering {
                     jarInputs.add(it.absolutePath)
                 }
             } else if (file.name.endsWith(".jar") && file.length() > 0) {
-                val excludedJars = setOf(
-                    "guava",
-                    "kotlin-stdlib-jdk7",
-                    "kotlin-stdlib-jdk8"
-                )
-                if (id.name !in excludedJars) {
+                if (id.name != "guava") {
                     jarInputs.add(file.absolutePath)
                 }
             }
         }
 
-        val runtimeOutDir = File(tempJarsDir, "runtime_dex_out").apply { mkdirs() }
         val cmd = mutableListOf(
             d8Executable.absolutePath,
             "--min-api", "26",
-            "--output", runtimeOutDir.absolutePath
+            "--output", outDir.absolutePath
         )
-        if (androidJar.exists()) {
-            cmd.add("--lib")
-            cmd.add(androidJar.absolutePath)
-        }
         cmd.addAll(jarInputs)
 
         val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
         val outputLog = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
         if (exitCode != 0) {
-            throw GradleException("Lỗi khi chạy d8 tạo aa_car_res.dat: $outputLog")
+            throw GradleException("Lỗi khi chạy d8 tạo aa_stub_runtime.dex: $outputLog")
         }
 
-        val classesDex = File(runtimeOutDir, "classes.dex")
+        val classesDex = File(outDir, "classes.dex")
         val targetDat = File(outDir, "aa_car_res.dat")
         if (classesDex.exists()) {
             if (targetDat.exists()) targetDat.delete()
@@ -180,7 +119,7 @@ val generateStubDex by tasks.registering {
         }
         var extraIdx = 2
         while (true) {
-            val extraDex = File(runtimeOutDir, "classes$extraIdx.dex")
+            val extraDex = File(outDir, "classes$extraIdx.dex")
             if (!extraDex.exists()) break
             val targetExtra = File(outDir, "aa_car_res_$extraIdx.dat")
             if (targetExtra.exists()) targetExtra.delete()
@@ -205,13 +144,10 @@ tasks.matching {
 }
 
 dependencies {
-    stubDexCompile("org.jetbrains.kotlin:kotlin-stdlib:${libs.versions.kotlin.get()}")
-    stubDexCompile(libs.androidx.core.ktx)
     stubDexCompile(libs.androidx.car.app)
     stubDexCompile(libs.androidx.car.app.projected)
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.android.apksig)
     implementation(libs.reandroid.arsclib)
-    testImplementation("junit:junit:4.13.2")
 }
