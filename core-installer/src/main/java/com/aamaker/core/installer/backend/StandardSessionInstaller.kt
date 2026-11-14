@@ -109,7 +109,16 @@ class StandardSessionInstaller(private val context: Context) {
                     message = "Cài đặt thành công gói ${event.packageName}"
                 )
             } else {
-                InstallResult.Error("Cài đặt thất bại (Mã ${event.statusCode}): ${event.statusMessage}")
+                val hint = if (
+                    event.statusCode == PackageInstaller.STATUS_FAILURE_CONFLICT ||
+                    event.statusMessage.contains("CONFLICT", ignoreCase = true) ||
+                    event.statusMessage.contains("UPDATE_INCOMPATIBLE", ignoreCase = true)
+                ) {
+                    "\nGợi ý: Ứng dụng gốc trên máy có chữ ký khác (Play Store). Hãy gỡ cài đặt bản gốc trước khi cài đè, hoặc bấm nút Tạo ngẫu nhiên (Shuffle) để đổi Package Name cài song song."
+                } else {
+                    ""
+                }
+                InstallResult.Error("Cài đặt thất bại (Mã ${event.statusCode}): ${event.statusMessage}$hint")
             }
         } catch (e: Exception) {
             onLog("[Non-Root Session] Lỗi: ${e.message}")

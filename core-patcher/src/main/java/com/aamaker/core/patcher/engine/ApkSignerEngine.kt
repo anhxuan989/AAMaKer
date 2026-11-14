@@ -12,14 +12,19 @@ import java.security.cert.X509Certificate
 import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Date
 
-class ApkSignerEngine(private val context: Context) {
+class ApkSignerEngine(
+    private val context: Context? = null,
+    private val customKeyDir: File? = null
+) {
 
     fun signApk(
         unsignedApk: File,
         signedOutputApk: File,
-        onLog: (String) -> Unit
+        onLog: (String) -> Unit,
+        minSdkVersion: Int = 24
     ) {
-        onLog("[Signer] Đang chuẩn bị khóa RSA-2048 & chứng chỉ X.509 để ký APK (Scheme V1 + V2 + V3)...")
+        val safeMinSdk = minSdkVersion.coerceIn(21, 35)
+        onLog("[Signer] Đang chuẩn bị khóa RSA-2048 & chứng chỉ X.509 để ký APK (Scheme V1 + V2 + V3, minSdk=$safeMinSdk)...")
         val (privateKey, certificate) = getOrCreateSigningCredentials()
 
         val signerConfig = ApkSigner.SignerConfig.Builder(
@@ -34,7 +39,7 @@ class ApkSignerEngine(private val context: Context) {
             .setV1SigningEnabled(true)
             .setV2SigningEnabled(true)
             .setV3SigningEnabled(true)
-            .setMinSdkVersion(26)
+            .setMinSdkVersion(safeMinSdk)
             .build()
 
         apkSigner.sign()
@@ -42,7 +47,9 @@ class ApkSignerEngine(private val context: Context) {
     }
 
     private fun getOrCreateSigningCredentials(): Pair<PrivateKey, X509Certificate> {
-        val keyDir = File(context.filesDir, "signing_keys").apply { mkdirs() }
+        val baseDir = customKeyDir ?: context?.filesDir
+            ?: throw IllegalStateException("ApkSignerEngine requires context or customKeyDir")
+        val keyDir = File(baseDir, "signing_keys").apply { mkdirs() }
         val pkFile = File(keyDir, "aamaker_rsa_v3.pk8")
         val certFile = File(keyDir, "aamaker_cert_v3.der")
 

@@ -394,15 +394,15 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             val loc = IntArray(2)
             for ((index, decor) in orderedDecors.withIndex()) {
                 try {
-                    if (decor.visibility != View.VISIBLE) {
-                        decor.visibility = View.VISIBLE
+                    if (decor.visibility == View.GONE) {
+                        continue
                     }
                     val lp = decor.layoutParams
                     val isFullScreenWindow = index == 0 ||
                         lp == null ||
                         (lp.width == ViewGroup.LayoutParams.MATCH_PARENT && lp.height == ViewGroup.LayoutParams.MATCH_PARENT)
 
-                    if (decor.width <= 0 || decor.height <= 0 || (allowLockedLayout && decor.isLayoutRequested)) {
+                    if (decor.width <= 0 || decor.height <= 0) {
                         didLockedLayout = true
                         if (isFullScreenWindow) {
                             decor.measure(
@@ -547,6 +547,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         val w = surfaceView.width
         val h = surfaceView.height
         if (w <= 0 || h <= 0) return
+        try {
+            surfaceView.setSecure(false)
+        } catch (_: Throwable) {
+        }
         val holderSurface = try {
             surfaceView.holder?.surface
         } catch (_: Throwable) {
@@ -749,6 +753,16 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     private fun applyLockScreenFlagsToActivity(activity: Activity, forceApply: Boolean = false) {
         try {
             if (activity.isFinishing || activity.isDestroyed) return
+            val win = activity.window
+            // Always clear FLAG_SECURE even on subsequent lifecycle callbacks (onStarted / onResumed)
+            // because streaming apps (PS Remote Play / PXPlay) often set FLAG_SECURE inside onCreate/onResume,
+            // which crashes or blanks non-secure VirtualDisplay / PixelCopy on Android 12–16.
+            if (win != null) {
+                try {
+                    win.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                } catch (_: Throwable) {
+                }
+            }
             if (!forceApply && appliedLockFlagsActivities[activity] == true) return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 activity.setShowWhenLocked(true)
@@ -756,7 +770,6 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 activity.setInheritShowWhenLocked(true)
             }
-            val win = activity.window
             if (win != null) {
                 win.addFlags(
                     WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
@@ -774,9 +787,11 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         try {
             if (activity.isFinishing || activity.isDestroyed) return
             applyLockScreenFlagsToActivity(activity, forceApply = false)
-            val decor = activity.window?.decorView
-            if (decor != null && decor.visibility != View.VISIBLE) {
-                decor.visibility = View.VISIBLE
+            if (isPhoneScreenLockedOrOff()) {
+                val decor = activity.window?.decorView
+                if (decor != null && decor.visibility != View.VISIBLE) {
+                    decor.visibility = View.VISIBLE
+                }
             }
             try {
                 val mStoppedField = Activity::class.java.getDeclaredField("mStopped").apply { isAccessible = true }
@@ -969,12 +984,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
     }
 
-    private fun ensureBottomLeftOpenAppOverlay(displayId: Int) {
+    private fun ensureBottomLeftOpenAppOverlay(@Suppress("UNUSED_PARAMETER") displayId: Int) {
         try {
-            val decorViews = findTargetDecorViewsOnDisplay(displayId)
-            val topDecor = decorViews.firstOrNull() as? FrameLayout
-                ?: (presentation?.window?.decorView as? FrameLayout)
-                ?: return
+            val topDecor = (presentation?.window?.decorView as? FrameLayout) ?: return
 
             val existing = topDecor.findViewWithTag<View>(attachedFabTag)
             if (existing != null) {
@@ -1042,6 +1054,35 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             ai.metaData?.getBoolean("com.aamaker.USE_ROOT_SHELL", false) == true
         } catch (_: Throwable) {
             false
+        }
+    }
+
+    private fun getBridgeAuthToken(): String? {
+        return try {
+            val appCtx = carContext.applicationContext
+            val ai = appCtx.packageManager.getApplicationInfo(
+                appCtx.packageName,
+                android.content.pm.PackageManager.GET_META_DATA
+            )
+            ai.metaData?.getString("com.aamaker.BRIDGE_TOKEN")
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun attachBridgeAuth(appCtx: Context, intent: Intent) {
+        getBridgeAuthToken()?.takeIf { it.isNotEmpty() }?.let { token ->
+            intent.putExtra("bridge_token", token)
+        }
+        try {
+            val callerIdentity = PendingIntent.getBroadcast(
+                appCtx,
+                0,
+                Intent("com.aamaker.identity.${appCtx.packageName}").setPackage(appCtx.packageName),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            intent.putExtra("caller_identity", callerIdentity)
+        } catch (_: Throwable) {
         }
     }
 
@@ -1441,6 +1482,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
         ensureReflectionInitialized()
         val candidates = ArrayList<View>(4)
+        val phoneLocked = isPhoneScreenLockedOrOff()
 
         try {
             val wmgInstance = cachedWmgInstance
@@ -1449,10 +1491,11 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 for (item in rawViews) {
                     val view = item as? View ?: continue
                     val isMirrorPres = view.tag == AppMirrorPresentation.PRESENTATION_ROOT_TAG
-                    if (!isMirrorPres && view.display?.displayId == preferredDisplayId) {
-                        if (view.visibility != View.VISIBLE) {
-                            view.visibility = View.VISIBLE
-                        }
+                    if (!isMirrorPres &&
+                        view.isAttachedToWindow &&
+                        (view.visibility == View.VISIBLE || phoneLocked) &&
+                        view.display?.displayId == preferredDisplayId
+                    ) {
                         candidates.add(view)
                     }
                 }
@@ -1460,10 +1503,12 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                     for (item in rawViews) {
                         val view = item as? View ?: continue
                         val isMirrorPres = view.tag == AppMirrorPresentation.PRESENTATION_ROOT_TAG
-                        if (!isMirrorPres && view.width > 0 && view.height > 0) {
-                            if (view.visibility != View.VISIBLE) {
-                                view.visibility = View.VISIBLE
-                            }
+                        if (!isMirrorPres &&
+                            view.isAttachedToWindow &&
+                            view.visibility == View.VISIBLE &&
+                            view.width > 0 &&
+                            view.height > 0
+                        ) {
                             candidates.add(view)
                         }
                     }
@@ -1484,9 +1529,8 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         if (act.isFinishing || act.isDestroyed) continue
                         if (act.javaClass.name.contains("CarAppPermissionActivity")) continue
                         val decor = act.window?.decorView ?: continue
-                        if (decor.visibility != View.VISIBLE) {
-                            decor.visibility = View.VISIBLE
-                        }
+                        if (!decor.isAttachedToWindow) continue
+                        if (decor.visibility != View.VISIBLE && !phoneLocked) continue
                         if (decor !in candidates) {
                             candidates.add(decor)
                         }
@@ -1686,8 +1730,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 putExtra("x1", x)
                 putExtra("y1", y)
                 putExtra("duration_ms", 55L)
+                attachBridgeAuth(appCtx, this)
             }
-            appCtx.sendBroadcast(intent)
+            appCtx.sendBroadcast(intent, "com.aamaker.permission.COMMAND_BRIDGE")
         } catch (_: Throwable) {
         }
     }
@@ -1724,8 +1769,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 putExtra("x2", x2)
                 putExtra("y2", y2)
                 putExtra("duration_ms", durationMs)
+                attachBridgeAuth(appCtx, this)
             }
-            appCtx.sendBroadcast(intent)
+            appCtx.sendBroadcast(intent, "com.aamaker.permission.COMMAND_BRIDGE")
         } catch (_: Throwable) {
         }
     }
@@ -1763,8 +1809,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 putExtra("display_id", targetDisplayId)
                 putExtra("component_name", compName)
+                attachBridgeAuth(appCtx, this)
             }
-            appCtx.sendBroadcast(bridgeIntent)
+            appCtx.sendBroadcast(bridgeIntent, "com.aamaker.permission.COMMAND_BRIDGE")
         } catch (_: Throwable) {
         }
         if (isRootShellAllowed()) {

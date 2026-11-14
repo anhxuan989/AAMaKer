@@ -20,40 +20,90 @@ public class AAMakerCarAppService extends Service {
     private static volatile ClassLoader cachedIsolatedLoader;
     private Service delegateService;
 
-    private static final class ChildFirstParentClassLoader extends ClassLoader {
+    private static final class IsolatedBridgeClassLoader extends ClassLoader {
         private final ClassLoader hostLoader;
 
-        ChildFirstParentClassLoader(ClassLoader hostLoader) {
-            super(ClassLoader.getSystemClassLoader().getParent());
+        IsolatedBridgeClassLoader(ClassLoader hostLoader) {
+            super(ClassLoader.getSystemClassLoader());
             this.hostLoader = hostLoader;
         }
 
-        @Override
-        protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        private static boolean isFrameworkClass(String name) {
+            return name.startsWith("java.") ||
+                name.startsWith("javax.") ||
+                name.startsWith("android.") ||
+                name.startsWith("dalvik.") ||
+                name.startsWith("sun.") ||
+                name.startsWith("org.json.") ||
+                name.startsWith("org.w3c.") ||
+                name.startsWith("org.xml.") ||
+                name.startsWith("org.xmlpull.");
+        }
 
+        @Override
+        protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            Class<?> loaded = findLoadedClass(name);
+            if (loaded != null) {
+                if (resolve) {
+                    resolveClass(loaded);
+                }
+                return loaded;
+            }
+
+            if (name.equals("com.aamaker.stub.runtime.AAMakerCarAppService") ||
+                name.startsWith("com.aamaker.stub.runtime.AAMakerCarAppService$")) {
+                Class<?> bootstrapCls = hostLoader.loadClass(name);
+                if (resolve) {
+                    resolveClass(bootstrapCls);
+                }
+                return bootstrapCls;
+            }
+
+            if (isFrameworkClass(name)) {
+                try {
+                    return super.loadClass(name, resolve);
+                } catch (ClassNotFoundException ignored) {
+                }
+            }
+
+            // Force InMemoryDexClassLoader to call findClass() in its own DEX first!
+            throw new ClassNotFoundException(name);
+        }
+
+        Class<?> loadFromHostOrBoot(String name) throws ClassNotFoundException {
             try {
-                return super.loadClass(name, resolve);
+                return ClassLoader.getSystemClassLoader().loadClass(name);
             } catch (ClassNotFoundException ignored) {
             }
-
-            boolean shouldIsolateFromHost =
-                name.startsWith("com.aamaker.stub.") ||
-                name.startsWith("androidx.car.app.") ||
-                name.startsWith("androidx.lifecycle.") ||
-                name.startsWith("androidx.core.") ||
-                name.startsWith("androidx.arch.core.") ||
-                name.startsWith("androidx.versionedparcelable.") ||
-                name.startsWith("androidx.media.") ||
-                name.startsWith("androidx.annotation.") ||
-                name.startsWith("kotlin.") ||
-                name.startsWith("kotlinx.") ||
-                name.startsWith("com.google.common.");
-
-            if (shouldIsolateFromHost && !name.equals("com.aamaker.stub.runtime.AAMakerCarAppService")) {
-                throw new ClassNotFoundException(name);
-            }
-
             return hostLoader.loadClass(name);
+        }
+    }
+
+    private static final class IsolatedRuntimeFacadeClassLoader extends ClassLoader {
+        private final InMemoryDexClassLoader isolatedDexLoader;
+        private final IsolatedBridgeClassLoader bridgeLoader;
+
+        IsolatedRuntimeFacadeClassLoader(ByteBuffer[] dexBuffers, ClassLoader hostLoader) {
+            super(ClassLoader.getSystemClassLoader());
+            this.bridgeLoader = new IsolatedBridgeClassLoader(hostLoader);
+            this.isolatedDexLoader = new InMemoryDexClassLoader(dexBuffers, this.bridgeLoader);
+        }
+
+        @Override
+        protected synchronized Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            try {
+                Class<?> cls = isolatedDexLoader.loadClass(name);
+                if (resolve) {
+                    resolveClass(cls);
+                }
+                return cls;
+            } catch (ClassNotFoundException ignored) {
+            }
+            Class<?> fallback = bridgeLoader.loadFromHostOrBoot(name);
+            if (resolve) {
+                resolveClass(fallback);
+            }
+            return fallback;
         }
     }
 
@@ -68,6 +118,12 @@ public class AAMakerCarAppService extends Service {
         @Override
         public ClassLoader getClassLoader() {
             return isolatedLoader;
+        }
+
+        @Override
+        public Context getApplicationContext() {
+            Context appCtx = super.getApplicationContext();
+            return appCtx != null ? appCtx : getBaseContext();
         }
     }
 
@@ -133,10 +189,9 @@ public class AAMakerCarAppService extends Service {
                 try {
                     List<ByteBuffer> dexBuffers = loadIsolatedDexBuffers();
                     if (!dexBuffers.isEmpty()) {
-                        ClassLoader filteringParent = new ChildFirstParentClassLoader(getClassLoader());
-                        loader = new InMemoryDexClassLoader(
+                        loader = new IsolatedRuntimeFacadeClassLoader(
                             dexBuffers.toArray(new ByteBuffer[0]),
-                            filteringParent
+                            getClassLoader()
                         );
                         cachedIsolatedLoader = loader;
                     }
