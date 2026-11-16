@@ -140,9 +140,20 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     private var scrollDisplayId: Int = Display.DEFAULT_DISPLAY
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val inputExecutor = Executors.newSingleThreadExecutor()
+    private var inputExecutor: java.util.concurrent.ExecutorService? = null
     private var persistentSuProcess: Process? = null
     private var persistentSuWriter: OutputStreamWriter? = null
+    private val safeShellIdentifierRegex = Regex("^[a-zA-Z0-9._/$]+$")
+    private var lastGpuMirrorFrameMs: Long = 0L
+
+    @Synchronized
+    private fun getOrCreateInputExecutor(): java.util.concurrent.ExecutorService {
+        val current = inputExecutor
+        if (current != null && !current.isShutdown) return current
+        return Executors.newSingleThreadExecutor { r ->
+            Thread(r, "AAMaker-StubInput").apply { isDaemon = true }
+        }.also { inputExecutor = it }
+    }
     private var cachedOpenAppIcon: CarIcon? = null
     private var cachedOpenAppBitmap: Bitmap? = null
     private val attachedFabTag = "aamaker_bottom_left_open_fab"
@@ -180,7 +191,11 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
     }
 
-    private fun postMainAsync(runnable: Runnable) {
+    private fun postMainAsync(urgentLockedOnly: Boolean, runnable: Runnable) {
+        if (!urgentLockedOnly || !isPhoneScreenLockedOrOff()) {
+            mainHandler.post(runnable)
+            return
+        }
         try {
             val msg = Message.obtain(mainHandler, runnable)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
@@ -192,7 +207,15 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
     }
 
-    private fun postMainDelayedAsync(runnable: Runnable, delayMillis: Long) {
+    private fun postMainAsync(runnable: Runnable) {
+        postMainAsync(false, runnable)
+    }
+
+    private fun postMainDelayedAsync(delayMillis: Long, urgentLockedOnly: Boolean, runnable: Runnable) {
+        if (!urgentLockedOnly || !isPhoneScreenLockedOrOff()) {
+            mainHandler.postDelayed(runnable, delayMillis)
+            return
+        }
         try {
             val msg = Message.obtain(mainHandler, runnable)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
@@ -202,6 +225,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         } catch (_: Throwable) {
             mainHandler.postDelayed(runnable, delayMillis)
         }
+    }
+
+    private fun postMainDelayedAsync(runnable: Runnable, delayMillis: Long) {
+        postMainDelayedAsync(delayMillis, false, runnable)
     }
 
     private fun getOrCreateSurfacePostHandler(): Handler {
@@ -234,7 +261,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                     if (screenLocked) {
                         unstopAllWindowRoots(invokeRelayout = false)
                     }
-                    if (!isSurfacePostInFlight.get()) {
+                    // Skip expensive CPU software Canvas draw on Main Thread when GPU VirtualDisplay is actively pushing frames!
+                    val gpuMirrorFresh = !screenLocked && (now - lastGpuMirrorFrameMs) < 350L
+                    if (!gpuMirrorFresh && !isSurfacePostInFlight.get()) {
                         val t0 = SystemClock.uptimeMillis()
                         renderFrameToCarSurfaceNow(vDisplayId, screenLocked, isInteractionBoosted)
                         drawElapsedMs = (SystemClock.uptimeMillis() - t0).coerceAtLeast(0L)
@@ -244,11 +273,12 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             }
             if (isSurfaceReady) {
                 val nextDelayMs = when {
-                    isInteractionBoosted -> (22L + drawElapsedMs / 2L).coerceIn(22L, 50L)
-                    screenLocked -> (33L + drawElapsedMs / 2L).coerceIn(33L, 65L)
-                    else -> (45L + drawElapsedMs).coerceIn(45L, 120L)
+                    !screenLocked && (now - lastGpuMirrorFrameMs) < 350L -> 250L
+                    isInteractionBoosted -> (28L + drawElapsedMs / 2L).coerceIn(28L, 65L)
+                    screenLocked -> (38L + drawElapsedMs / 2L).coerceIn(38L, 80L)
+                    else -> (55L + drawElapsedMs).coerceIn(55L, 140L)
                 }
-                postMainDelayedAsync(this, nextDelayMs)
+                postMainDelayedAsync(nextDelayMs, screenLocked, this)
             } else {
                 isLockScreenMirrorTickerActive = false
             }
@@ -1776,21 +1806,43 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
     }
 
+    private fun startStreamDrainThread(stream: java.io.InputStream) {
+        Thread({
+            val buf = ByteArray(1024)
+            try {
+                while (stream.read(buf) >= 0) {
+                    // Drain stdout/stderr to avoid 64KB pipe deadlock
+                }
+            } catch (_: Throwable) {
+            } finally {
+                runCatching { stream.close() }
+            }
+        }, "AAMaker-SuDrain").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
     private fun runRootInputCommand(cmd: String) {
-        inputExecutor.execute {
+        getOrCreateInputExecutor().execute {
             try {
                 var writer = persistentSuWriter
                 val proc = persistentSuProcess
                 if (writer == null || proc == null || !proc.isAlive) {
+                    runCatching { persistentSuWriter?.close() }
+                    runCatching { persistentSuProcess?.destroy() }
                     val shellBin = String(charArrayOf('s', 'u'))
-                    val newProc = ProcessBuilder(shellBin).start()
+                    val newProc = ProcessBuilder(shellBin).redirectErrorStream(true).start()
+                    startStreamDrainThread(newProc.inputStream)
                     writer = OutputStreamWriter(newProc.outputStream)
                     persistentSuProcess = newProc
                     persistentSuWriter = writer
                 }
-                writer.write("$cmd\n")
+                writer.write("$cmd >/dev/null 2>&1\n")
                 writer.flush()
             } catch (_: Throwable) {
+                runCatching { persistentSuWriter?.close() }
+                runCatching { persistentSuProcess?.destroy() }
                 persistentSuWriter = null
                 persistentSuProcess = null
             }
@@ -1803,6 +1855,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         compName: String
     ) {
         if (compName.isEmpty() || targetDisplayId == Display.DEFAULT_DISPLAY) return
+        if (!safeShellIdentifierRegex.matches(compName) || !safeShellIdentifierRegex.matches(appCtx.packageName)) return
         try {
             val bridgeIntent = Intent("com.aamaker.action.LAUNCH_ON_DISPLAY").apply {
                 setPackage("com.aamaker.app")
@@ -1816,7 +1869,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
         if (isRootShellAllowed()) {
             runRootInputCommand(
-                "cmd deviceidle tempwhitelist -d 300000 ${appCtx.packageName} >/dev/null 2>&1; am start --display $targetDisplayId --activity-single-top --activity-clear-top -n $compName"
+                "cmd deviceidle tempwhitelist -d 300000 '${appCtx.packageName}' >/dev/null 2>&1; am start --display $targetDisplayId --activity-single-top --activity-clear-top -n '$compName'"
             )
         }
     }
@@ -2042,11 +2095,60 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             virtualDisplayImageReader?.close()
 
             val bgHandler = getOrCreateSurfacePostHandler()
+            var gpuCopyBitmap: Bitmap? = null
             val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2).apply {
                 setOnImageAvailableListener({ r ->
-                    try {
-                        r.acquireLatestImage()?.close()
+                    val image = try {
+                        r.acquireLatestImage()
                     } catch (_: Throwable) {
+                        null
+                    } ?: return@setOnImageAvailableListener
+                    try {
+                        val outSurface = carOutputSurface
+                        if (!isSurfaceReady || outSurface == null || !outSurface.isValid || isPhoneScreenLockedOrOff()) {
+                            return@setOnImageAvailableListener
+                        }
+                        if (findTargetDecorViewsOnDisplay(virtualDisplay?.display?.displayId ?: Display.DEFAULT_DISPLAY).isEmpty()) {
+                            return@setOnImageAvailableListener
+                        }
+                        if (!isSurfacePostInFlight.compareAndSet(false, true)) {
+                            return@setOnImageAvailableListener
+                        }
+                        try {
+                            val planes = image.planes
+                            if (planes.isNotEmpty()) {
+                                val plane = planes[0]
+                                val pixelStride = plane.pixelStride
+                                val rowStride = plane.rowStride
+                                val rowPadding = rowStride - pixelStride * width
+                                val strideWidth = width + (if (pixelStride > 0) rowPadding / pixelStride else 0)
+                                if (strideWidth >= width && height > 0) {
+                                    var bmp = gpuCopyBitmap
+                                    if (bmp == null || bmp.isRecycled || bmp.width != strideWidth || bmp.height != height) {
+                                        bmp?.recycle()
+                                        bmp = Bitmap.createBitmap(strideWidth, height, Bitmap.Config.ARGB_8888)
+                                        gpuCopyBitmap = bmp
+                                    }
+                                    plane.buffer.rewind()
+                                    bmp.copyPixelsFromBuffer(plane.buffer)
+                                    val surfaceCanvas = outSurface.lockCanvas(null)
+                                    try {
+                                        val srcRect = Rect(0, 0, width, height)
+                                        val dstRect = Rect(0, 0, width, height)
+                                        surfaceCanvas.drawBitmap(bmp, srcRect, dstRect, null)
+                                        drawBottomLeftOpenAppButtonOnCanvas(surfaceCanvas, width, height)
+                                        lastGpuMirrorFrameMs = SystemClock.uptimeMillis()
+                                    } finally {
+                                        outSurface.unlockCanvasAndPost(surfaceCanvas)
+                                    }
+                                }
+                            }
+                        } finally {
+                            isSurfacePostInFlight.set(false)
+                        }
+                    } catch (_: Throwable) {
+                    } finally {
+                        runCatching { image.close() }
                     }
                 }, bgHandler)
             }
@@ -2121,12 +2223,24 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             for (i in renderBuffers.indices) {
                 renderBuffers[i]?.recycle()
                 renderBuffers[i] = null
+                renderCanvases[i]?.clearCache()
                 renderCanvases[i] = null
             }
-            persistentSuWriter?.close()
-            persistentSuProcess?.destroy()
+            textureViewSampleCache.values.forEach { runCatching { it.recycle() } }
+            textureViewSampleCache.clear()
+            surfaceViewBitmapCache.values.forEach { runCatching { it.recycle() } }
+            surfaceViewBitmapCache.clear()
+            surfaceViewCopyInFlight.clear()
+            latestSampledSurfaceBitmap = null
+            lastGpuMirrorFrameMs = 0L
+            runCatching { persistentSuWriter?.close() }
+            runCatching { persistentSuProcess?.destroy() }
             persistentSuWriter = null
             persistentSuProcess = null
+            synchronized(this) {
+                inputExecutor?.shutdownNow()
+                inputExecutor = null
+            }
         } catch (_: Throwable) {
         }
     }
@@ -2171,12 +2285,27 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         private val tmpClipRect = Rect()
         private val hwBitmapCache = java.util.WeakHashMap<Bitmap, Bitmap>()
 
+        fun clearCache() {
+            synchronized(hwBitmapCache) {
+                hwBitmapCache.values.forEach { runCatching { it.recycle() } }
+                hwBitmapCache.clear()
+            }
+        }
+
         private fun unwrapHardwareBitmap(bitmap: Bitmap): Bitmap {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && bitmap.config == Bitmap.Config.HARDWARE) {
                 synchronized(hwBitmapCache) {
                     val cached = hwBitmapCache[bitmap]
                     if (cached != null && !cached.isRecycled) {
                         return cached
+                    }
+                    if (hwBitmapCache.size >= 24) {
+                        val firstIter = hwBitmapCache.entries.iterator()
+                        if (firstIter.hasNext()) {
+                            val evicted = firstIter.next()
+                            runCatching { evicted.value?.recycle() }
+                            firstIter.remove()
+                        }
                     }
                     val swCopy = try {
                         bitmap.copy(Bitmap.Config.ARGB_8888, false)

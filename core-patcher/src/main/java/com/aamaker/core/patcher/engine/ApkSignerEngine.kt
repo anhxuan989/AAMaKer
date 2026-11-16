@@ -1,6 +1,8 @@
 package com.aamaker.core.patcher.engine
 
 import android.content.Context
+import com.aamaker.core.patcher.security.BridgeAuthManager
+import com.aamaker.core.patcher.security.LocalKeyEnvelopeCrypto
 import com.android.apksig.ApkSigner
 import java.io.File
 import java.math.BigInteger
@@ -55,7 +57,16 @@ class ApkSignerEngine(
 
         if (pkFile.exists() && certFile.exists()) {
             try {
-                val keySpec = PKCS8EncodedKeySpec(pkFile.readBytes())
+                val storedPkBytes = pkFile.readBytes()
+                val rawPkBytes = LocalKeyEnvelopeCrypto.decryptOrReadRaw(storedPkBytes)
+                    ?: throw IllegalStateException("Cannot decrypt signing key")
+                if (!LocalKeyEnvelopeCrypto.hasEncryptedMagic(storedPkBytes)) {
+                    val upgradedBytes = LocalKeyEnvelopeCrypto.encryptIfAvailable(rawPkBytes)
+                    if (LocalKeyEnvelopeCrypto.hasEncryptedMagic(upgradedBytes)) {
+                        runCatching { pkFile.writeBytes(upgradedBytes) }
+                    }
+                }
+                val keySpec = PKCS8EncodedKeySpec(rawPkBytes)
                 val privateKey = KeyFactory.getInstance("RSA").generatePrivate(keySpec)
                 val cert = certFile.inputStream().use {
                     CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate
@@ -64,6 +75,7 @@ class ApkSignerEngine(
             } catch (_: Exception) {
                 pkFile.delete()
                 certFile.delete()
+                BridgeAuthManager.invalidateSigningCertCache()
             }
         }
 
@@ -72,8 +84,10 @@ class ApkSignerEngine(
         val keyPair = kpg.generateKeyPair()
         val certBytes = SelfSignedX509Generator.generateDerCertificate(keyPair)
 
-        pkFile.writeBytes(keyPair.private.encoded)
+        val protectedPkBytes = LocalKeyEnvelopeCrypto.encryptIfAvailable(keyPair.private.encoded)
+        pkFile.writeBytes(protectedPkBytes)
         certFile.writeBytes(certBytes)
+        BridgeAuthManager.invalidateSigningCertCache()
 
         val cert = certBytes.inputStream().use {
             CertificateFactory.getInstance("X.509").generateCertificate(it) as X509Certificate

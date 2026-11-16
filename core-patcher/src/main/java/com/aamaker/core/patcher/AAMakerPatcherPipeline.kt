@@ -6,6 +6,7 @@ import com.aamaker.core.patcher.engine.ManifestAndArscPatcher
 import com.aamaker.core.patcher.engine.SplitApkMerger
 import com.aamaker.core.patcher.model.PatchConfig
 import com.aamaker.core.patcher.model.PatchResult
+import com.aamaker.core.patcher.security.PackageNameValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -25,6 +26,11 @@ class AAMakerPatcherPipeline(private val context: Context) {
         val outputDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "patched_apks").apply { mkdirs() }
 
         try {
+            val requestedPkg = config.customPackageName?.takeIf { it.isNotBlank() } ?: config.originalPackageName
+            require(PackageNameValidator.isValidPackageName(requestedPkg)) {
+                "Tên gói (Package Name) không hợp lệ: '$requestedPkg'. Vui lòng nhập định dạng chuẩn Android (ví dụ: com.example.app)."
+            }
+
             onLog("=== BẮT ĐẦU QUY TRÌNH PATCH ANDROID AUTO ===")
             onLog("Ứng dụng gốc: ${config.appName} (${config.originalPackageName})")
             onLog("Chế độ Patch: ${config.strategy.title}")
@@ -43,10 +49,21 @@ class AAMakerPatcherPipeline(private val context: Context) {
                 )
             }
 
-            val finalPkg = config.customPackageName?.takeIf { it.isNotBlank() } ?: config.originalPackageName
+            val finalPkg = requestedPkg
             val finalAppName = config.customAppName?.takeIf { it.isNotBlank() } ?: config.appName
-            val signedApkFile = File(outputDir, "${finalPkg}_AA_Patched.apk")
+            val safeOutFileName = PackageNameValidator.sanitizeSafeFileName(
+                "${finalPkg}_AA_Patched.apk",
+                "patched_app_AA_Patched.apk"
+            )
+            val signedApkFile = File(outputDir, safeOutFileName)
             if (signedApkFile.exists()) signedApkFile.delete()
+            outputDir.listFiles()?.forEach { oldFile ->
+                if (oldFile.isFile && oldFile != signedApkFile &&
+                    System.currentTimeMillis() - oldFile.lastModified() > 24L * 3600_000L
+                ) {
+                    runCatching { oldFile.delete() }
+                }
+            }
 
             apkSigner.signApk(
                 unsignedApk = unsignedApk,
@@ -54,6 +71,7 @@ class AAMakerPatcherPipeline(private val context: Context) {
                 onLog = onLog,
                 minSdkVersion = outcome.minSdkVersion
             )
+            runCatching { unsignedApk.delete() }
 
             val elapsed = System.currentTimeMillis() - startTime
             onLog("=== HOÀN TẤT PATCH TRONG ${elapsed}ms ===")

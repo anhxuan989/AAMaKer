@@ -2,6 +2,7 @@ package com.aamaker.core.patcher.engine
 
 import com.aamaker.core.patcher.model.PatchConfig
 import com.aamaker.core.patcher.model.PatchStrategy
+import com.aamaker.core.patcher.security.PackageNameValidator
 import com.android.apksig.ApkVerifier
 import com.reandroid.apk.ApkModule
 import com.reandroid.archive.ByteInputSource
@@ -306,6 +307,29 @@ class SplitMergeAndPatchPipelineTest {
             assertNotNull("@style/AppTheme must not be deleted by split cleaner", themeEntry)
             assertFalse("@style/AppTheme must not be null", themeEntry!!.isNull)
         }
+    }
+
+    @Test
+    fun `package name validator blocks shell injection and path traversal payloads`() {
+        assertTrue(PackageNameValidator.isValidPackageName("com.stremio.one"))
+        assertTrue(PackageNameValidator.isValidPackageName("com.example.app_123.aa999"))
+
+        assertFalse(PackageNameValidator.isValidPackageName(""))
+        assertFalse(PackageNameValidator.isValidPackageName("singleword"))
+        assertFalse(PackageNameValidator.isValidPackageName("com.example.app; id"))
+        assertFalse(PackageNameValidator.isValidPackageName("com.example.$(reboot)"))
+        assertFalse(PackageNameValidator.isValidPackageName("com.example.`whoami`"))
+        assertFalse(PackageNameValidator.isValidPackageName("../../files/signing_keys"))
+        assertFalse(PackageNameValidator.isValidPackageName("123.invalid.start"))
+
+        val sanitized = PackageNameValidator.sanitizeSafeFileName(
+            "../../files/signing_keys/aamaker_cert_v3.der",
+            "fallback.apk"
+        )
+        assertEquals("aamaker_cert_v3.der", sanitized)
+        assertFalse(sanitized.contains(".."))
+        assertFalse(sanitized.contains("/"))
+        assertFalse(sanitized.contains("\\"))
     }
 
     private fun createBaseSplitApk(outFile: File) {

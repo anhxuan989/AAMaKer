@@ -1,6 +1,7 @@
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -8,7 +9,26 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-val releaseKeystoreFile = rootProject.file("keystore/aamaker_release.jks")
+val keystoreProps = Properties().apply {
+    val propsFile = rootProject.file("keystore.properties")
+    if (propsFile.isFile) {
+        propsFile.inputStream().use { load(it) }
+    }
+}
+val configuredKeystorePath = System.getenv("AAMAKER_KEYSTORE_PATH")
+    ?: keystoreProps.getProperty("storeFile")
+val releaseKeystoreFile = configuredKeystorePath?.let { rootProject.file(it) }
+val releaseStorePassword = System.getenv("AAMAKER_KEYSTORE_PASSWORD")
+    ?: keystoreProps.getProperty("storePassword")
+val releaseKeyAlias = System.getenv("AAMAKER_KEY_ALIAS")
+    ?: keystoreProps.getProperty("keyAlias")
+val releaseKeyPassword = System.getenv("AAMAKER_KEY_PASSWORD")
+    ?: keystoreProps.getProperty("keyPassword")
+    ?: releaseStorePassword
+val hasValidReleaseKeystore = releaseKeystoreFile != null &&
+    releaseKeystoreFile.isFile &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank()
 
 android {
     namespace = "com.aamaker.app"
@@ -18,8 +38,8 @@ android {
         applicationId = "com.aamaker.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -27,25 +47,27 @@ android {
     }
 
     signingConfigs {
-        create("releaseKey") {
-            storeFile = releaseKeystoreFile
-            storePassword = "aamaker_store_pass_2026"
-            keyAlias = "aamaker_release_key"
-            keyPassword = "aamaker_store_pass_2026"
-            enableV1Signing = true
-            enableV2Signing = true
-            enableV3Signing = true
+        if (hasValidReleaseKeystore) {
+            create("releaseKey") {
+                storeFile = releaseKeystoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
         }
     }
 
     buildTypes {
         debug {
-            if (releaseKeystoreFile.exists()) {
+            if (hasValidReleaseKeystore) {
                 signingConfig = signingConfigs.getByName("releaseKey")
             }
         }
         release {
-            signingConfig = if (releaseKeystoreFile.exists()) {
+            signingConfig = if (hasValidReleaseKeystore) {
                 signingConfigs.getByName("releaseKey")
             } else {
                 signingConfigs.getByName("debug")

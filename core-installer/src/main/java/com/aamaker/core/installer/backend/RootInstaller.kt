@@ -2,17 +2,28 @@ package com.aamaker.core.installer.backend
 
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.installer.model.InstallResult
+import com.aamaker.core.installer.util.InstallerSecurityValidator
 import com.aamaker.core.installer.util.PlayProtectSnapshot
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class RootInstaller {
 
     fun isRootAvailable(): Boolean {
         return try {
-            Shell.getShell().isRoot
+            val cachedGranted = Shell.isAppGrantedRoot()
+            if (cachedGranted != null) return cachedGranted
+            val probePool = Executors.newSingleThreadExecutor()
+            try {
+                probePool.submit(Callable { Shell.getShell().isRoot }).get(6, TimeUnit.SECONDS)
+            } finally {
+                probePool.shutdownNow()
+            }
         } catch (_: Throwable) {
             false
         }
@@ -31,6 +42,9 @@ class RootInstaller {
         autoGrantPermissions: Boolean = true,
         onLog: (String) -> Unit
     ): InstallResult = withContext(Dispatchers.IO) {
+        if (!InstallerSecurityValidator.isValidPackageName(expectedPackageName)) {
+            return@withContext InstallResult.Error("Tên gói cài đặt không hợp lệ: '$expectedPackageName'")
+        }
         if (!isRootAvailable()) {
             return@withContext InstallResult.Error("Thiết bị chưa cấp quyền Root (Superuser) cho AAMaKer.")
         }
@@ -45,15 +59,19 @@ class RootInstaller {
                 val remotePath = "/data/local/tmp/aamaker_${timestamp}_${idx}.apk"
                 remoteTmpPaths.add(remotePath)
                 onLog("[Root] Đang sao chép APK vào $remotePath...")
-                val copyResult = Shell.cmd(
-                    "cp \"${file.absolutePath}\" \"$remotePath\"",
-                    "chmod 644 \"$remotePath\""
-                ).exec()
+                val safeSrc = InstallerSecurityValidator.shellSingleQuote(file.absolutePath)
+                val safeDst = InstallerSecurityValidator.shellSingleQuote(remotePath)
+                val copyResult = execRootBounded(
+                    timeoutSeconds = 90L,
+                    "cp $safeSrc $safeDst",
+                    "chmod 644 $safeDst"
+                )
 
-                if (!copyResult.isSuccess) {
-                    remoteTmpPaths.forEach { Shell.cmd("rm -f \"$it\"").exec() }
+                if (copyResult == null || !copyResult.isSuccess) {
+                    cleanupRemoteTmpFiles(remoteTmpPaths)
+                    val errText = copyResult?.err?.joinToString("\n") ?: "Quá thời gian chờ (Timeout)"
                     return@withContext InstallResult.Error(
-                        "Không thể chép APK vào /data/local/tmp: ${copyResult.err.joinToString("\n")}"
+                        "Không thể chép APK vào /data/local/tmp: $errText"
                     )
                 }
             }
@@ -61,32 +79,46 @@ class RootInstaller {
             onLog("[Root] Đang cài đặt với nguồn com.android.vending...")
             var playProtectSnapshot: PlayProtectSnapshot? = null
             try {
-                val backupRes = Shell.cmd(PlayProtectSnapshot.buildBackupAndDisableShellCommand()).exec()
-                playProtectSnapshot = PlayProtectSnapshot.parseSnapshot(backupRes.out)
+                val backupRes = execRootBounded(15L, PlayProtectSnapshot.buildBackupAndDisableShellCommand())
+                if (backupRes != null) {
+                    playProtectSnapshot = PlayProtectSnapshot.parseSnapshot(backupRes.out)
+                }
             } catch (_: Throwable) {
             }
+
             val installResult = try {
                 if (remoteTmpPaths.size == 1) {
-                    Shell.cmd(
-                        "pm install -r -d -i com.android.vending --user 0 \"${remoteTmpPaths.first()}\""
-                    ).exec()
+                    val safeRemote = InstallerSecurityValidator.shellSingleQuote(remoteTmpPaths.first())
+                    execRootBounded(
+                        INSTALL_TIMEOUT_SECONDS,
+                        "pm install -r -d -i com.android.vending --user 0 $safeRemote"
+                    )
                 } else {
-                    val joinedPaths = remoteTmpPaths.joinToString(" ") { "\"$it\"" }
-                    Shell.cmd(
+                    val joinedPaths = remoteTmpPaths.joinToString(" ") {
+                        InstallerSecurityValidator.shellSingleQuote(it)
+                    }
+                    execRootBounded(
+                        INSTALL_TIMEOUT_SECONDS,
                         "pm install-multiple -r -d -i com.android.vending --user 0 $joinedPaths"
-                    ).exec()
+                    )
                 }
             } finally {
                 playProtectSnapshot?.let { snapshot ->
                     try {
-                        Shell.cmd(snapshot.buildRestoreShellCommand()).exec()
+                        execRootBounded(15L, snapshot.buildRestoreShellCommand())
                         onLog("[Root] Đã khôi phục trạng thái Play Protect ban đầu.")
                     } catch (_: Throwable) {
                     }
                 }
             }
 
-            remoteTmpPaths.forEach { Shell.cmd("rm -f \"$it\"").exec() }
+            cleanupRemoteTmpFiles(remoteTmpPaths)
+
+            if (installResult == null) {
+                return@withContext InstallResult.Error(
+                    "Quá thời gian chờ (${INSTALL_TIMEOUT_SECONDS}s) khi chạy pm install qua Root."
+                )
+            }
 
             val output = (installResult.out + installResult.err).joinToString("\n").trim()
             onLog("[Root] Kết quả pm install: $output")
@@ -97,18 +129,20 @@ class RootInstaller {
             }
 
             if (autoGrantPermissions) {
+                val safePkg = InstallerSecurityValidator.shellSingleQuote(expectedPackageName)
                 onLog("[Root] Đang cấp quyền SYSTEM_ALERT_WINDOW, PROJECT_MEDIA & bật Touch Bridge cho $expectedPackageName...")
-                Shell.cmd(
-                    "appops set $expectedPackageName SYSTEM_ALERT_WINDOW allow",
-                    "appops set $expectedPackageName PROJECT_MEDIA allow",
-                    "appops set $expectedPackageName RUN_IN_BACKGROUND allow",
-                    "appops set $expectedPackageName RUN_ANY_IN_BACKGROUND allow",
-                    "appops set $expectedPackageName WAKE_LOCK allow",
+                execRootBounded(
+                    20L,
+                    "appops set $safePkg SYSTEM_ALERT_WINDOW allow >/dev/null 2>&1",
+                    "appops set $safePkg PROJECT_MEDIA allow >/dev/null 2>&1",
+                    "appops set $safePkg RUN_IN_BACKGROUND allow >/dev/null 2>&1",
+                    "appops set $safePkg RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1",
+                    "appops set $safePkg WAKE_LOCK allow >/dev/null 2>&1",
                     "dumpsys deviceidle whitelist +$expectedPackageName >/dev/null 2>&1",
-                    "cmd app_hibernation set-state $expectedPackageName false >/dev/null 2>&1",
-                    "am set-standby-bucket $expectedPackageName active >/dev/null 2>&1",
-                    "am force-stop com.google.android.projection.gearhead"
-                ).exec()
+                    "cmd app_hibernation set-state $safePkg false >/dev/null 2>&1",
+                    "am set-standby-bucket $safePkg active >/dev/null 2>&1",
+                    "am force-stop com.google.android.projection.gearhead >/dev/null 2>&1"
+                )
                 onLog("[Root] Đã khởi động lại dịch vụ Android Auto (Gearhead) để cập nhật danh sách ứng dụng ngay lập tức.")
             }
 
@@ -119,9 +153,26 @@ class RootInstaller {
                 message = "Đã cài đặt thành công qua Root (với nguồn Google Play Store & tự động cấp quyền AppOps)!"
             )
         } catch (e: Exception) {
-            remoteTmpPaths.forEach { Shell.cmd("rm -f \"$it\"").exec() }
+            cleanupRemoteTmpFiles(remoteTmpPaths)
             onLog("[Root] Ngoại lệ: ${e.message}")
             InstallResult.Error("Lỗi cài đặt qua Root: ${e.message}", e)
+        }
+    }
+
+    private fun cleanupRemoteTmpFiles(paths: List<String>) {
+        if (paths.isEmpty()) return
+        val cmds = paths.map { "rm -f ${InstallerSecurityValidator.shellSingleQuote(it)}" }.toTypedArray()
+        runCatching { execRootBounded(15L, *cmds) }
+    }
+
+    private fun execRootBounded(timeoutSeconds: Long, vararg commands: String): Shell.Result? {
+        val pool = Executors.newSingleThreadExecutor()
+        return try {
+            pool.submit(Callable { Shell.cmd(*commands).exec() }).get(timeoutSeconds, TimeUnit.SECONDS)
+        } catch (_: Throwable) {
+            null
+        } finally {
+            pool.shutdownNow()
         }
     }
 
@@ -136,5 +187,9 @@ class RootInstaller {
         } else {
             ""
         }
+    }
+
+    companion object {
+        private const val INSTALL_TIMEOUT_SECONDS = 180L
     }
 }

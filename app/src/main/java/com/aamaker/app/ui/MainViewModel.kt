@@ -27,6 +27,7 @@ import com.aamaker.core.patcher.model.CarAppCategory
 import com.aamaker.core.patcher.model.PatchConfig
 import com.aamaker.core.patcher.model.PatchResult
 import com.aamaker.core.patcher.model.PatchStrategy
+import com.aamaker.core.patcher.security.PackageNameValidator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -187,7 +188,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 selectedCandidate = candidate,
                 selectedStrategy = defaultStrategy,
-                customPackageName = candidate.packageName,
+                customPackageName = generateRandomizedPackageName(candidate.packageName),
                 customAppName = candidate.appName,
                 lastPatchedApk = null,
                 lastSavedStoragePath = null,
@@ -210,7 +211,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateStrategy(strategy: PatchStrategy) {
-        _uiState.update { it.copy(selectedStrategy = strategy) }
+        _uiState.update { state ->
+            val nextCustomPkg = if (
+                strategy != PatchStrategy.DIRECT_INSTALL_NO_PATCH &&
+                state.customPackageName.isBlank() &&
+                state.selectedCandidate != null
+            ) {
+                generateRandomizedPackageName(state.selectedCandidate.packageName)
+            } else {
+                state.customPackageName
+            }
+            state.copy(
+                selectedStrategy = strategy,
+                customPackageName = nextCustomPkg
+            )
+        }
     }
 
     fun updateCategory(category: CarAppCategory) {
@@ -227,8 +242,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun randomizePackageNameSuffix() {
         val current = _uiState.value.selectedCandidate?.packageName ?: return
-        val randomSuffix = (100..999).random()
-        _uiState.update { it.copy(customPackageName = "${current}.aa$randomSuffix") }
+        val nextPkg = generateRandomizedPackageName(
+            basePackageName = current,
+            avoidPackageName = _uiState.value.customPackageName
+        )
+        _uiState.update { it.copy(customPackageName = nextPkg) }
+    }
+
+    private fun generateRandomizedPackageName(
+        basePackageName: String,
+        avoidPackageName: String? = null
+    ): String {
+        val stripped = basePackageName.replace(TRAILING_AA_SUFFIX_REGEX, "")
+        val cleanBase = if (PackageNameValidator.isValidPackageName(stripped)) {
+            stripped
+        } else {
+            basePackageName
+        }
+        if (cleanBase.length + 6 > 255) {
+            return basePackageName
+        }
+        var candidatePkg: String
+        var attempts = 0
+        do {
+            val randomSuffix = (100..999).random()
+            candidatePkg = "${cleanBase}.aa$randomSuffix"
+            attempts++
+        } while (candidatePkg == avoidPackageName && attempts < 10)
+        return if (PackageNameValidator.isValidPackageName(candidatePkg)) {
+            candidatePkg
+        } else {
+            basePackageName
+        }
     }
 
     fun updateCustomAppName(name: String) {
@@ -274,8 +319,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val candidate = state.selectedCandidate ?: return
         if (state.isWorking) return
 
+        if (!PackageNameValidator.isValidPackageName(candidate.packageName)) {
+            val invalidMsg = "Tên gói APK gốc không hợp lệ: '${candidate.packageName}'"
+            appendLog("[Cảnh báo] $invalidMsg")
+            _uiState.update {
+                it.copy(statusBannerEntry = { _ -> "⚠️ $invalidMsg" })
+            }
+            return
+        }
+
         if (state.selectedStrategy == PatchStrategy.DIRECT_INSTALL_NO_PATCH) {
             startDirectInstallOriginalApk()
+            return
+        }
+
+        val targetPkgToValidate = state.customPackageName.takeIf { it.isNotBlank() } ?: candidate.packageName
+        if (!PackageNameValidator.isValidPackageName(targetPkgToValidate)) {
+            val invalidMsg = "Tên gói (Package Name) không hợp lệ: '$targetPkgToValidate'. Định dạng đúng ví dụ: com.example.app"
+            appendLog("[Cảnh báo] $invalidMsg")
+            _uiState.update {
+                it.copy(
+                    statusBannerEntry = { s -> s.statusPatchFailedFormat(invalidMsg) }
+                )
+            }
             return
         }
 
@@ -475,6 +541,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val candidate = state.selectedCandidate ?: return
         if (state.isWorking) return
 
+        if (!PackageNameValidator.isValidPackageName(candidate.packageName)) {
+            val invalidMsg = "Tên gói APK gốc không hợp lệ: '${candidate.packageName}'"
+            appendLog("[Cảnh báo] $invalidMsg")
+            _uiState.update {
+                it.copy(statusBannerEntry = { _ -> "⚠️ $invalidMsg" })
+            }
+            return
+        }
+
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -588,6 +663,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private val SAFE_PKG_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
+        private val TRAILING_AA_SUFFIX_REGEX = Regex("\\.aa\\d{3}$")
         private val timeFormatter = ThreadLocal.withInitial {
             SimpleDateFormat("HH:mm:ss", Locale.getDefault())
         }

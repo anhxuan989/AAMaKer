@@ -3,6 +3,7 @@ package com.aamaker.core.installer.backend
 import android.content.pm.PackageManager
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.installer.model.InstallResult
+import com.aamaker.core.installer.util.InstallerSecurityValidator
 import com.aamaker.core.installer.util.PlayProtectSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -10,12 +11,23 @@ import rikka.shizuku.Shizuku
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
 import java.io.InputStreamReader
 import java.lang.reflect.Method
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class ShizukuInstaller {
 
     private var cachedNewProcessMethod: Method? = null
+
+    private data class ProcessResult(
+        val exitCode: Int,
+        val stdout: String,
+        val stderr: String,
+        val timedOut: Boolean = false
+    )
 
     fun isAvailable(): Boolean {
         return try {
@@ -45,6 +57,9 @@ class ShizukuInstaller {
         expectedPackageName: String,
         onLog: (String) -> Unit
     ): InstallResult = withContext(Dispatchers.IO) {
+        if (!InstallerSecurityValidator.isValidPackageName(expectedPackageName)) {
+            return@withContext InstallResult.Error("Tên gói cài đặt không hợp lệ: '$expectedPackageName'")
+        }
         if (!isAvailable()) {
             return@withContext InstallResult.Error("Dịch vụ Shizuku chưa chạy. Vui lòng mở app Shizuku và kích hoạt trước.")
         }
@@ -58,22 +73,17 @@ class ShizukuInstaller {
         try {
             onLog("[Shizuku] Đang khởi tạo phiên cài đặt với UID 2000 (ADB Shell)...")
 
-            val stdout: String
-            val stderr: String
-            val exitCode: Int
+            val finalRes: ProcessResult
 
             var playProtectSnapshot: PlayProtectSnapshot? = null
             try {
-                val backupProc = createShizukuProcess(
-                    arrayOf(
-                        "sh",
-                        "-c",
-                        PlayProtectSnapshot.buildBackupAndDisableShellCommand()
-                    )
+                val backupRes = runShizukuShellBounded(
+                    shellCmd = PlayProtectSnapshot.buildBackupAndDisableShellCommand(),
+                    timeoutSeconds = 15L
                 )
-                val backupLines = BufferedReader(InputStreamReader(backupProc.inputStream)).readLines()
-                backupProc.waitFor()
-                playProtectSnapshot = PlayProtectSnapshot.parseSnapshot(backupLines)
+                if (!backupRes.timedOut) {
+                    playProtectSnapshot = PlayProtectSnapshot.parseSnapshot(backupRes.stdout.lines())
+                }
             } catch (_: Throwable) {
             }
 
@@ -81,95 +91,85 @@ class ShizukuInstaller {
                 if (apkFiles.size == 1) {
                     val apkFile = apkFiles.first()
                     val fileSize = apkFile.length()
-                    onLog("[Shizuku] Thực thi: pm install-create -r -i com.android.vending --user 0 -S $fileSize")
+                    onLog("[Shizuku] Thực thi: pm install -r -d -i com.android.vending --user 0 -S $fileSize")
 
-                    val createCmd = arrayOf(
-                        "sh", "-c",
-                        "pm install -r -d -i com.android.vending --user 0 -S $fileSize"
+                    finalRes = runShizukuShellBounded(
+                        shellCmd = "pm install -r -d -i com.android.vending --user 0 -S $fileSize",
+                        stdinFile = apkFile,
+                        timeoutSeconds = INSTALL_TIMEOUT_SECONDS
                     )
-                    val process = createShizukuProcess(createCmd)
-
-                    FileInputStream(apkFile).use { fis ->
-                        process.outputStream.use { os ->
-                            fis.copyTo(os, bufferSize = 64 * 1024)
-                            os.flush()
-                        }
-                    }
-
-                    stdout = BufferedReader(InputStreamReader(process.inputStream)).readText().trim()
-                    stderr = BufferedReader(InputStreamReader(process.errorStream)).readText().trim()
-                    exitCode = process.waitFor()
                 } else {
                     onLog("[Shizuku] Thực thi: pm install-create -r -d -i com.android.vending --user 0 (${apkFiles.size} APKs)")
-                    val createProc = createShizukuProcess(
-                        arrayOf("sh", "-c", "pm install-create -r -d -i com.android.vending --user 0")
+                    val createRes = runShizukuShellBounded(
+                        shellCmd = "pm install-create -r -d -i com.android.vending --user 0",
+                        timeoutSeconds = 30L
                     )
-                    val createOut = BufferedReader(InputStreamReader(createProc.inputStream)).readText().trim()
-                    val createErr = BufferedReader(InputStreamReader(createProc.errorStream)).readText().trim()
-                    createProc.waitFor()
 
-                    val sessionId = SESSION_ID_REGEX.find(createOut)?.groupValues?.get(1)
-                        ?: return@withContext InstallResult.Error("Cài đặt qua Shizuku thất bại: $createOut $createErr")
-
-                    apkFiles.forEachIndexed { idx, file ->
-                        val size = file.length()
-                        val splitName = "split_${idx}_${file.name.replace(SAFE_SPLIT_NAME_REGEX, "_")}"
-                        onLog("[Shizuku] Thực thi: pm install-write -S $size $sessionId $splitName -")
-                        val writeProc = createShizukuProcess(
-                            arrayOf("sh", "-c", "pm install-write -S $size $sessionId $splitName -")
+                    val sessionId = SESSION_ID_REGEX.find(createRes.stdout)?.groupValues?.get(1)
+                        ?: return@withContext InstallResult.Error(
+                            "Cài đặt qua Shizuku thất bại: ${createRes.stdout} ${createRes.stderr}".trim()
                         )
-                        FileInputStream(file).use { fis ->
-                            writeProc.outputStream.use { os ->
-                                fis.copyTo(os, bufferSize = 64 * 1024)
-                                os.flush()
+
+                    for ((idx, file) in apkFiles.withIndex()) {
+                        val size = file.length()
+                        val splitName = "split_${idx}_${file.name.replace(SAFE_SPLIT_NAME_REGEX, "_").take(100)}"
+                        onLog("[Shizuku] Thực thi: pm install-write -S $size $sessionId $splitName -")
+                        val writeRes = runShizukuShellBounded(
+                            shellCmd = "pm install-write -S $size $sessionId $splitName -",
+                            stdinFile = file,
+                            timeoutSeconds = INSTALL_TIMEOUT_SECONDS
+                        )
+                        if (writeRes.timedOut || writeRes.exitCode != 0 || !writeRes.stdout.contains("Success", ignoreCase = true)) {
+                            runCatching {
+                                runShizukuShellBounded("pm install-abandon $sessionId", timeoutSeconds = 15L)
                             }
-                        }
-                        val writeOut = BufferedReader(InputStreamReader(writeProc.inputStream)).readText().trim()
-                        val writeErr = BufferedReader(InputStreamReader(writeProc.errorStream)).readText().trim()
-                        val writeExit = writeProc.waitFor()
-                        if (writeExit != 0 || !writeOut.contains("Success", ignoreCase = true)) {
-                            createShizukuProcess(arrayOf("sh", "-c", "pm install-abandon $sessionId")).waitFor()
-                            return@withContext InstallResult.Error("Cài đặt qua Shizuku thất bại: $writeOut $writeErr")
+                            return@withContext InstallResult.Error(
+                                "Cài đặt qua Shizuku thất bại: ${writeRes.stdout} ${writeRes.stderr}".trim()
+                            )
                         }
                     }
 
-                    val commitProc = createShizukuProcess(
-                        arrayOf("sh", "-c", "pm install-commit $sessionId")
+                    finalRes = runShizukuShellBounded(
+                        shellCmd = "pm install-commit $sessionId",
+                        timeoutSeconds = INSTALL_TIMEOUT_SECONDS
                     )
-                    stdout = BufferedReader(InputStreamReader(commitProc.inputStream)).readText().trim()
-                    stderr = BufferedReader(InputStreamReader(commitProc.errorStream)).readText().trim()
-                    exitCode = commitProc.waitFor()
                 }
             } finally {
                 playProtectSnapshot?.let { snapshot ->
                     try {
-                        createShizukuProcess(
-                            arrayOf("sh", "-c", snapshot.buildRestoreShellCommand())
-                        ).waitFor()
+                        runShizukuShellBounded(
+                            shellCmd = snapshot.buildRestoreShellCommand(),
+                            timeoutSeconds = 15L
+                        )
                         onLog("[Shizuku] Đã khôi phục trạng thái Play Protect ban đầu.")
                     } catch (_: Throwable) {
                     }
                 }
             }
 
-            onLog("[Shizuku] Kết quả: $stdout $stderr (ExitCode=$exitCode)")
+            if (finalRes.timedOut) {
+                return@withContext InstallResult.Error(
+                    "Quá thời gian chờ (${INSTALL_TIMEOUT_SECONDS}s) khi cài đặt qua Shizuku. Vui lòng kiểm tra thông báo xác nhận cài đặt hoặc khởi động lại Shizuku."
+                )
+            }
 
-            if (exitCode == 0 && stdout.contains("Success", ignoreCase = true)) {
+            onLog("[Shizuku] Kết quả: ${finalRes.stdout} ${finalRes.stderr} (ExitCode=${finalRes.exitCode})")
+
+            if (finalRes.exitCode == 0 && finalRes.stdout.contains("Success", ignoreCase = true)) {
+                val safePkg = InstallerSecurityValidator.shellSingleQuote(expectedPackageName)
                 try {
-                    createShizukuProcess(
-                        arrayOf(
-                            "sh", "-c",
-                            "appops set $expectedPackageName SYSTEM_ALERT_WINDOW allow; " +
-                                "appops set $expectedPackageName PROJECT_MEDIA allow; " +
-                                "appops set $expectedPackageName RUN_IN_BACKGROUND allow; " +
-                                "appops set $expectedPackageName RUN_ANY_IN_BACKGROUND allow; " +
-                                "appops set $expectedPackageName WAKE_LOCK allow; " +
-                                "dumpsys deviceidle whitelist +$expectedPackageName >/dev/null 2>&1; " +
-                                "cmd app_hibernation set-state $expectedPackageName false >/dev/null 2>&1; " +
-                                "am set-standby-bucket $expectedPackageName active >/dev/null 2>&1; " +
-                                "am force-stop com.google.android.projection.gearhead"
-                        )
-                    ).waitFor()
+                    runShizukuShellBounded(
+                        shellCmd = "appops set $safePkg SYSTEM_ALERT_WINDOW allow >/dev/null 2>&1; " +
+                            "appops set $safePkg PROJECT_MEDIA allow >/dev/null 2>&1; " +
+                            "appops set $safePkg RUN_IN_BACKGROUND allow >/dev/null 2>&1; " +
+                            "appops set $safePkg RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1; " +
+                            "appops set $safePkg WAKE_LOCK allow >/dev/null 2>&1; " +
+                            "dumpsys deviceidle whitelist +$expectedPackageName >/dev/null 2>&1; " +
+                            "cmd app_hibernation set-state $safePkg false >/dev/null 2>&1; " +
+                            "am set-standby-bucket $safePkg active >/dev/null 2>&1; " +
+                            "am force-stop com.google.android.projection.gearhead >/dev/null 2>&1",
+                        timeoutSeconds = 20L
+                    )
                     onLog("[Shizuku] Đã cấp quyền SYSTEM_ALERT_WINDOW, kích hoạt Touch Bridge & làm mới cache ứng dụng Android Auto (Gearhead).")
                 } catch (_: Throwable) {
                 }
@@ -180,13 +180,82 @@ class ShizukuInstaller {
                     message = "Cài đặt qua Shizuku thành công với nguồn Google Play Store!"
                 )
             } else {
-                val combined = "$stdout $stderr".trim()
+                val combined = "${finalRes.stdout} ${finalRes.stderr}".trim()
                 val hint = buildConflictHint(combined)
                 InstallResult.Error("Cài đặt qua Shizuku thất bại: $combined$hint")
             }
         } catch (e: Exception) {
             onLog("[Shizuku] Ngoại lệ: ${e.message}")
             InstallResult.Error("Lỗi thực thi Shizuku: ${e.message}", e)
+        }
+    }
+
+    private fun runShizukuShellBounded(
+        shellCmd: String,
+        stdinFile: File? = null,
+        timeoutSeconds: Long = 120L
+    ): ProcessResult {
+        val process = createShizukuProcess(arrayOf("sh", "-c", shellCmd))
+        val streamPool = Executors.newFixedThreadPool(2)
+        try {
+            val outFuture = streamPool.submit(Callable { readBoundedText(process.inputStream) })
+            val errFuture = streamPool.submit(Callable { readBoundedText(process.errorStream) })
+
+            try {
+                if (stdinFile != null) {
+                    FileInputStream(stdinFile).use { fis ->
+                        process.outputStream.use { os ->
+                            fis.copyTo(os, bufferSize = 64 * 1024)
+                            os.flush()
+                        }
+                    }
+                } else {
+                    runCatching { process.outputStream.close() }
+                }
+            } catch (_: Throwable) {
+                runCatching { process.outputStream.close() }
+            }
+
+            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            if (!finished) {
+                runCatching { process.destroyForcibly() }
+                val out = runCatching { outFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+                val err = runCatching { errFuture.get(2, TimeUnit.SECONDS) }.getOrDefault("")
+                return ProcessResult(exitCode = -1, stdout = out, stderr = err, timedOut = true)
+            }
+
+            val stdout = runCatching { outFuture.get(5, TimeUnit.SECONDS) }.getOrDefault("")
+            val stderr = runCatching { errFuture.get(5, TimeUnit.SECONDS) }.getOrDefault("")
+            return ProcessResult(
+                exitCode = process.exitValue(),
+                stdout = stdout,
+                stderr = stderr,
+                timedOut = false
+            )
+        } finally {
+            runCatching { process.destroy() }
+            streamPool.shutdownNow()
+        }
+    }
+
+    private fun readBoundedText(stream: InputStream, maxChars: Int = 64 * 1024): String {
+        return try {
+            stream.use { ins ->
+                val reader = BufferedReader(InputStreamReader(ins))
+                val sb = StringBuilder()
+                val buf = CharArray(4096)
+                while (true) {
+                    val n = reader.read(buf)
+                    if (n < 0) break
+                    val remaining = maxChars - sb.length
+                    if (remaining > 0) {
+                        sb.append(buf, 0, minOf(n, remaining))
+                    }
+                }
+                sb.toString().trim()
+            }
+        } catch (_: Throwable) {
+            ""
         }
     }
 
@@ -206,6 +275,7 @@ class ShizukuInstaller {
     }
 
     companion object {
+        private const val INSTALL_TIMEOUT_SECONDS = 180L
         private val SESSION_ID_REGEX = Regex("""\[(\d+)]""")
         private val SAFE_SPLIT_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
 

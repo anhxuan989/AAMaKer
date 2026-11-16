@@ -128,26 +128,25 @@ public class AAMakerCarAppService extends Service {
     }
 
     private byte[] readRuntimeChunk(String assetName) {
-        try {
-            InputStream rawStream = getAssets().open(assetName);
-            ByteArrayOutputStream rawBuffer = new ByteArrayOutputStream();
-            byte[] temp = new byte[16384];
-            int read;
-            while ((read = rawStream.read(temp, 0, temp.length)) != -1) {
-                rawBuffer.write(temp, 0, read);
+        try (InputStream rawStream = getAssets().open(assetName)) {
+            java.io.PushbackInputStream pb = new java.io.PushbackInputStream(rawStream, 2);
+            byte[] magic = new byte[2];
+            int headerRead = pb.read(magic, 0, 2);
+            if (headerRead <= 0) {
+                return null;
             }
-            rawStream.close();
-            byte[] rawBytes = rawBuffer.toByteArray();
-            if (rawBytes.length >= 2 && (rawBytes[0] & 0xFF) == 0x1F && (rawBytes[1] & 0xFF) == 0x8B) {
-                GZIPInputStream gzipIn = new GZIPInputStream(new java.io.ByteArrayInputStream(rawBytes));
-                ByteArrayOutputStream outBuffer = new ByteArrayOutputStream();
-                while ((read = gzipIn.read(temp, 0, temp.length)) != -1) {
+            pb.unread(magic, 0, headerRead);
+
+            boolean isGzip = headerRead == 2 && (magic[0] & 0xFF) == 0x1F && (magic[1] & 0xFF) == 0x8B;
+            try (InputStream decodedStream = isGzip ? new GZIPInputStream(pb, 16384) : pb) {
+                ByteArrayOutputStream outBuffer = new ByteArrayOutputStream(256 * 1024);
+                byte[] temp = new byte[16384];
+                int read;
+                while ((read = decodedStream.read(temp, 0, temp.length)) != -1) {
                     outBuffer.write(temp, 0, read);
                 }
-                gzipIn.close();
                 return outBuffer.toByteArray();
             }
-            return rawBytes;
         } catch (Throwable ignored) {
             return null;
         }

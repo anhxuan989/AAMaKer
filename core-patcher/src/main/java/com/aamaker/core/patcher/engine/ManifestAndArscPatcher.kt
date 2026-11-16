@@ -4,6 +4,7 @@ import android.content.Context
 import com.aamaker.core.patcher.model.PatchConfig
 import com.aamaker.core.patcher.model.PatchStrategy
 import com.aamaker.core.patcher.security.BridgeAuthManager
+import com.aamaker.core.patcher.security.PackageNameValidator
 import com.reandroid.apk.ApkModule
 import com.reandroid.archive.ByteInputSource
 import com.reandroid.archive.writer.ZipAligner
@@ -64,6 +65,9 @@ class ManifestAndArscPatcher(
 
         val originalPkg = apkModule.packageName ?: config.originalPackageName
         val targetPkg = config.customPackageName?.takeIf { it.isNotBlank() } ?: originalPkg
+        require(PackageNameValidator.isValidPackageName(targetPkg)) {
+            "Package Name đích không hợp lệ: '$targetPkg'"
+        }
 
         if (targetPkg != originalPkg) {
             onLog("[Patcher] Đang đổi tên gói: $originalPkg -> $targetPkg (cập nhật Application, Component, Permission & Authorities)...")
@@ -353,6 +357,8 @@ class ManifestAndArscPatcher(
                 val trimmed = part.trim()
                 when {
                     trimmed.isEmpty() -> trimmed
+                    trimmed == oldPkg -> newPkg
+                    trimmed.startsWith("$oldPkg.") -> newPkg + trimmed.substring(oldPkg.length)
                     trimmed.contains(oldPkg) -> trimmed.replace(oldPkg, newPkg)
                     trimmed.startsWith("$newPkg.") || trimmed == newPkg -> trimmed
                     else -> "$newPkg.$trimmed"

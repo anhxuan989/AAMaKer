@@ -79,9 +79,17 @@ class SplitApkMerger {
         val apks = mutableListOf<File>()
         val obbs = mutableListOf<File>()
         var idx = 0
+        val canonicalRoot = targetDir.canonicalFile
+        var totalExtractedBytes = 0L
+        var entryCount = 0
+
         ZipInputStream(BufferedInputStream(FileInputStream(bundleFile))).use { zis ->
             var entry: ZipEntry? = zis.nextEntry
             while (entry != null) {
+                entryCount++
+                if (entryCount > MAX_ZIP_ENTRIES) {
+                    throw IllegalStateException("Gói Bundle chứa quá nhiều mục ($entryCount), hủy giải nén để tránh treo máy.")
+                }
                 if (!entry.isDirectory) {
                     val rawName = File(entry.name).name
                     if (rawName.endsWith(".apk", ignoreCase = true)) {
@@ -90,14 +98,17 @@ class SplitApkMerger {
                         ) {
                             "base.apk"
                         } else {
-                            "split_${idx++}_${rawName.replace(UNSAFE_FILE_CHARS, "_")}"
+                            "split_${idx++}_${rawName.replace(UNSAFE_FILE_CHARS, "_").take(140)}"
                         }
                         val outFile = File(targetDir, safeName)
-                        FileOutputStream(outFile).use { fos -> zis.copyTo(fos) }
+                        ensureInsideDirectory(outFile, canonicalRoot)
+                        totalExtractedBytes += copyBoundedStream(zis, outFile, MAX_TOTAL_EXTRACTED_BYTES - totalExtractedBytes)
                         apks.add(outFile)
                     } else if (rawName.endsWith(".obb", ignoreCase = true)) {
-                        val outFile = File(targetDir, rawName.replace(UNSAFE_FILE_CHARS, "_"))
-                        FileOutputStream(outFile).use { fos -> zis.copyTo(fos) }
+                        val safeObbName = "obb_${idx++}_${rawName.replace(UNSAFE_FILE_CHARS, "_").take(140)}"
+                        val outFile = File(targetDir, safeObbName)
+                        ensureInsideDirectory(outFile, canonicalRoot)
+                        totalExtractedBytes += copyBoundedStream(zis, outFile, MAX_TOTAL_EXTRACTED_BYTES - totalExtractedBytes)
                         obbs.add(outFile)
                     }
                 }
@@ -113,6 +124,35 @@ class SplitApkMerger {
             }
         }
         return sortedApks to obbs
+    }
+
+    private fun ensureInsideDirectory(file: File, canonicalRoot: File) {
+        val canonicalTarget = file.canonicalFile
+        val rootPath = canonicalRoot.path
+        val targetPath = canonicalTarget.path
+        if (targetPath != rootPath && !targetPath.startsWith(rootPath + File.separator)) {
+            throw SecurityException("Phát hiện đường dẫn giải nén không an toàn: ${file.name}")
+        }
+    }
+
+    private fun copyBoundedStream(input: java.io.InputStream, outFile: File, maxRemainingBytes: Long): Long {
+        if (maxRemainingBytes <= 0L) {
+            throw IllegalStateException("Dung lượng giải nén vượt quá giới hạn an toàn (4 GB)!")
+        }
+        var copied = 0L
+        val buffer = ByteArray(64 * 1024)
+        FileOutputStream(outFile).use { fos ->
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                copied += read
+                if (copied > maxRemainingBytes) {
+                    throw IllegalStateException("Dung lượng giải nén vượt quá giới hạn an toàn (4 GB)!")
+                }
+                fos.write(buffer, 0, read)
+            }
+        }
+        return copied
     }
 
     private fun mergeApksIntoModule(
@@ -408,6 +448,8 @@ class SplitApkMerger {
         private const val ATTR_REQUIRED_SPLIT_TYPES = 0x0101064e
         private const val ATTR_SPLIT_TYPES = 0x0101064f
 
+        private const val MAX_ZIP_ENTRIES = 2048
+        private const val MAX_TOTAL_EXTRACTED_BYTES = 4L * 1024L * 1024L * 1024L
         private const val ANDROID_NS_URI = "http://schemas.android.com/apk/res/android"
         private val UNSAFE_FILE_CHARS = Regex("[^a-zA-Z0-9._-]")
         private val BUNDLE_EXTENSIONS = setOf("apks", "xapk", "apkm", "zip")

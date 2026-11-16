@@ -86,6 +86,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -120,7 +121,12 @@ import java.io.FileOutputStream
 import java.util.zip.ZipFile
 
 private object AppIconCache {
-    private val cache = LruCache<String, ImageBitmap>(180)
+    // Bound cache by actual memory footprint (~16 MB max) rather than raw item count
+    private val cache = object : LruCache<String, ImageBitmap>(16 * 1024) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int {
+            return ((value.width * value.height * 4) / 1024).coerceAtLeast(1)
+        }
+    }
     fun get(key: String): ImageBitmap? = cache.get(key)
     fun put(key: String, bitmap: ImageBitmap) {
         cache.put(key, bitmap)
@@ -129,7 +135,12 @@ private object AppIconCache {
 
 private fun Drawable.toImageBitmap(targetPx: Int = 128): ImageBitmap {
     if (this is BitmapDrawable && bitmap != null) {
-        return bitmap.asImageBitmap()
+        val src = bitmap
+        if (src.width <= targetPx && src.height <= targetPx) {
+            return src.asImageBitmap()
+        }
+        val scaled = Bitmap.createScaledBitmap(src, targetPx, targetPx, true)
+        return scaled.asImageBitmap()
     }
     val w = intrinsicWidth.takeIf { it > 0 }?.coerceAtMost(targetPx) ?: targetPx
     val h = intrinsicHeight.takeIf { it > 0 }?.coerceAtMost(targetPx) ?: targetPx
@@ -206,7 +217,10 @@ private fun AppCandidateIcon(
                                     }
                                 }
                                 if (bestEntry != null) {
-                                    val tempApk = File(context.cacheDir, "icon_probe_${candidate.packageName.hashCode()}.apk")
+                                    val tempApk = File(
+                                        context.cacheDir,
+                                        "icon_probe_${candidate.packageName.hashCode()}_${System.nanoTime()}.apk"
+                                    )
                                     try {
                                         zip.getInputStream(bestEntry).use { zIn ->
                                             FileOutputStream(tempApk).use { fOut -> zIn.copyTo(fOut) }
@@ -313,9 +327,9 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
         LayoutDirection.Ltr
     }
 
-    var currentTab by remember { mutableIntStateOf(0) }
-    var showLanguageDialog by remember { mutableStateOf(false) }
-    var pendingDirectInstallOnPick by remember { mutableStateOf(false) }
+    var currentTab by rememberSaveable { mutableIntStateOf(0) }
+    var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingDirectInstallOnPick by rememberSaveable { mutableStateOf(false) }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
@@ -1776,10 +1790,15 @@ private fun EnvironmentDiagnosticTab(
                                 }
                                 context.startActivity(intent)
                             } catch (_: Exception) {
-                                val fallback = context.packageManager.getLaunchIntentForPackage(
-                                    "com.google.android.projection.gearhead"
-                                )
-                                if (fallback != null) context.startActivity(fallback)
+                                try {
+                                    val fallback = context.packageManager.getLaunchIntentForPackage(
+                                        "com.google.android.projection.gearhead"
+                                    )?.apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    }
+                                    if (fallback != null) context.startActivity(fallback)
+                                } catch (_: Exception) {
+                                }
                             }
                         },
                         shape = MaterialTheme.shapes.medium,

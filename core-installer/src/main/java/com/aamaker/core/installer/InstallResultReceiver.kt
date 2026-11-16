@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 class InstallResultReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
+        val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
         val packageName = intent.getStringExtra(PackageInstaller.EXTRA_PACKAGE_NAME) ?: "unknown"
         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""
@@ -25,13 +26,26 @@ class InstallResultReceiver : BroadcastReceiver() {
                     intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 }
                 if (confirmIntent != null) {
-                    confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(confirmIntent)
+                    try {
+                        confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(confirmIntent)
+                    } catch (e: Throwable) {
+                        _installEvents.tryEmit(
+                            SessionInstallEvent(
+                                sessionId = sessionId,
+                                success = false,
+                                statusCode = PackageInstaller.STATUS_FAILURE_ABORTED,
+                                packageName = packageName,
+                                statusMessage = e.message ?: "Không thể mở hộp thoại xác nhận cài đặt"
+                            )
+                        )
+                    }
                 }
             }
             PackageInstaller.STATUS_SUCCESS -> {
                 _installEvents.tryEmit(
                     SessionInstallEvent(
+                        sessionId = sessionId,
                         success = true,
                         statusCode = status,
                         packageName = packageName,
@@ -42,6 +56,7 @@ class InstallResultReceiver : BroadcastReceiver() {
             else -> {
                 _installEvents.tryEmit(
                     SessionInstallEvent(
+                        sessionId = sessionId,
                         success = false,
                         statusCode = status,
                         packageName = packageName,
@@ -53,6 +68,7 @@ class InstallResultReceiver : BroadcastReceiver() {
     }
 
     data class SessionInstallEvent(
+        val sessionId: Int,
         val success: Boolean,
         val statusCode: Int,
         val packageName: String,
@@ -60,7 +76,7 @@ class InstallResultReceiver : BroadcastReceiver() {
     )
 
     companion object {
-        private val _installEvents = MutableSharedFlow<SessionInstallEvent>(extraBufferCapacity = 4)
+        private val _installEvents = MutableSharedFlow<SessionInstallEvent>(extraBufferCapacity = 8)
         val installEvents: SharedFlow<SessionInstallEvent> = _installEvents.asSharedFlow()
     }
 }

@@ -440,6 +440,7 @@ class GearheadXposedHook : IXposedHookLoadPackage {
         val floatArrays = mutableListOf<Field>()
         val byteArrays = mutableListOf<Field>()
 
+        var hasLongTimestampField = false
         for (field in cls.declaredFields) {
             if (Modifier.isStatic(field.modifiers)) continue
             when (field.type) {
@@ -449,6 +450,9 @@ class GearheadXposedHook : IXposedHookLoadPackage {
                         explicitSensorTypeField = field
                     }
                     nonStaticIntFields.add(field)
+                }
+                Long::class.javaPrimitiveType -> {
+                    hasLongTimestampField = true
                 }
                 IntArray::class.java -> {
                     field.isAccessible = true
@@ -465,14 +469,22 @@ class GearheadXposedHook : IXposedHookLoadPackage {
             }
         }
 
-        val resolvedSensorField = explicitSensorTypeField ?: when {
-            nonStaticIntFields.size == 1 -> nonStaticIntFields[0].apply { isAccessible = true }
-            nonStaticIntFields.size >= 2 -> {
-                val first = nonStaticIntFields[0]
-                val second = nonStaticIntFields[1]
-                (if (first.name == "a" && second.name == "b") second else first).apply { isAccessible = true }
+        // Guard against obfuscated non-sensor classes: real CarSensorEvent always carries timestamp (long)
+        // plus at least two value arrays (float[] / int[] / byte[]).
+        val hasExpectedSensorArrays = (intArrays.size + floatArrays.size + byteArrays.size) >= 2
+        val resolvedSensorField = explicitSensorTypeField ?: if (hasLongTimestampField && hasExpectedSensorArrays) {
+            when {
+                nonStaticIntFields.size == 1 -> nonStaticIntFields[0].apply { isAccessible = true }
+                nonStaticIntFields.size == 2 -> {
+                    // Standard Parcelable CarSensorEvent has versionCode (often 'a') + sensorType ('b')
+                    val first = nonStaticIntFields[0]
+                    val second = nonStaticIntFields[1]
+                    (if (first.name == "a" && second.name == "b") second else first).apply { isAccessible = true }
+                }
+                else -> null
             }
-            else -> null
+        } else {
+            null
         }
 
         val layout = SensorFieldLayout(

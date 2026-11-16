@@ -8,10 +8,11 @@ import android.os.Build
 import com.aamaker.core.installer.InstallResultReceiver
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.installer.model.InstallResult
+import com.aamaker.core.installer.util.InstallerSecurityValidator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.flow.first
 import java.io.File
 import java.io.FileInputStream
 import java.lang.reflect.Method
@@ -29,12 +30,17 @@ class StandardSessionInstaller(private val context: Context) {
         expectedPackageName: String,
         onLog: (String) -> Unit
     ): InstallResult = withContext(Dispatchers.IO) {
+        if (!InstallerSecurityValidator.isValidPackageName(expectedPackageName)) {
+            return@withContext InstallResult.Error("Tên gói cài đặt không hợp lệ: '$expectedPackageName'")
+        }
         if (apkFiles.isEmpty()) {
             return@withContext InstallResult.Error("Danh sách file APK đầu vào trống!")
         }
+        var createdSessionId: Int? = null
+        var sessionCommitted = false
+        val packageInstaller = context.packageManager.packageInstaller
         try {
             onLog("[Non-Root Session] Khởi tạo PackageInstaller.SessionParams...")
-            val packageInstaller = context.packageManager.packageInstaller
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
 
             params.setAppPackageName(expectedPackageName)
@@ -58,7 +64,11 @@ class StandardSessionInstaller(private val context: Context) {
             }
 
             val totalBytes = apkFiles.sumOf { it.length() }
+            if (totalBytes > 0L) {
+                params.setSize(totalBytes)
+            }
             val sessionId = packageInstaller.createSession(params)
+            createdSessionId = sessionId
             onLog("[Non-Root Session] Đã tạo Session #$sessionId, đang ghi dữ liệu APK (${totalBytes / 1024} KB)...")
 
             packageInstaller.openSession(sessionId).use { session ->
@@ -66,7 +76,7 @@ class StandardSessionInstaller(private val context: Context) {
                     val entryName = if (apkFiles.size == 1) {
                         "base.apk"
                     } else {
-                        "split_${idx}_${file.name.replace(SAFE_SPLIT_NAME_REGEX, "_")}"
+                        "split_${idx}_${file.name.replace(SAFE_SPLIT_NAME_REGEX, "_").take(100)}"
                     }
                     FileInputStream(file).use { input ->
                         session.openWrite(entryName, 0, file.length()).use { output ->
@@ -77,6 +87,7 @@ class StandardSessionInstaller(private val context: Context) {
                 }
 
                 val callbackIntent = Intent(context, InstallResultReceiver::class.java).apply {
+                    setPackage(context.packageName)
                     action = "com.aamaker.core.installer.ACTION_INSTALL_COMMIT_$sessionId"
                 }
                 val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -88,10 +99,13 @@ class StandardSessionInstaller(private val context: Context) {
 
                 onLog("[Non-Root Session] Đang gửi yêu cầu xác nhận cài đặt tới hệ thống...")
                 session.commit(pendingIntent.intentSender)
+                sessionCommitted = true
             }
 
             val event = withTimeoutOrNull(60_000L) {
-                InstallResultReceiver.installEvents.first()
+                InstallResultReceiver.installEvents.first { ev ->
+                    ev.sessionId == sessionId || (ev.sessionId == -1 && ev.packageName == expectedPackageName)
+                }
             }
 
             if (event == null) {
@@ -121,6 +135,9 @@ class StandardSessionInstaller(private val context: Context) {
                 InstallResult.Error("Cài đặt thất bại (Mã ${event.statusCode}): ${event.statusMessage}$hint")
             }
         } catch (e: Exception) {
+            if (!sessionCommitted && createdSessionId != null) {
+                runCatching { packageInstaller.abandonSession(createdSessionId) }
+            }
             onLog("[Non-Root Session] Lỗi: ${e.message}")
             InstallResult.Error("Lỗi cài đặt qua Session API: ${e.message}", e)
         }

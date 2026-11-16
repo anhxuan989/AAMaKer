@@ -5,6 +5,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import com.aamaker.core.patcher.security.PackageNameValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -94,12 +95,26 @@ class InstalledAppsRepository(private val context: Context) {
     suspend fun importExternalApkUri(uri: Uri): TargetAppCandidate? = withContext(Dispatchers.IO) {
         try {
             val importDir = File(context.cacheDir, "imported_apks").apply { mkdirs() }
-            val fileName = queryFileName(uri) ?: "external_${System.currentTimeMillis()}.apk"
-            val targetFile = File(importDir, fileName)
+            // Clean up previously imported temporary APKs/Bundles so internal cache never fills up
+            importDir.listFiles()?.forEach { oldFile ->
+                runCatching { oldFile.deleteRecursively() }
+            }
+
+            val rawFileName = queryFileName(uri)
+            val safeFileName = PackageNameValidator.sanitizeSafeFileName(
+                rawFileName,
+                "external_${System.currentTimeMillis()}.apk"
+            )
+            val targetFile = File(importDir, safeFileName)
+            val canonicalRoot = importDir.canonicalFile
+            val canonicalTarget = targetFile.canonicalFile
+            if (!canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)) {
+                return@withContext null
+            }
 
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(targetFile).use { output ->
-                    input.copyTo(output)
+                    input.copyTo(output, bufferSize = 64 * 1024)
                 }
             } ?: return@withContext null
 
@@ -130,8 +145,12 @@ class InstalledAppsRepository(private val context: Context) {
                     isFromExternalFile = true
                 )
             } else {
-                var bundlePkg = "com.aamaker.bundle.${fileName.substringBeforeLast('.').replace(SAFE_BUNDLE_NAME_REGEX, "").lowercase()}"
-                var bundleLabel = fileName.substringBeforeLast('.')
+                val cleanStem = safeFileName.substringBeforeLast('.')
+                    .replace(SAFE_BUNDLE_NAME_REGEX, "")
+                    .lowercase()
+                    .let { if (it.isBlank() || !it.first().isLetter()) "app$it" else it }
+                var bundlePkg = "com.aamaker.bundle.$cleanStem"
+                var bundleLabel = safeFileName.substringBeforeLast('.')
                 var bundleVersion = "Bundle"
                 var bundleHasCarMeta = false
 
