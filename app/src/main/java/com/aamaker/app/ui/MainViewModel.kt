@@ -84,13 +84,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val patcherPipeline = AAMakerPatcherPipeline(application)
 
     private val _uiState = MutableStateFlow(
-        MainUiState(selectedLanguage = AppLanguage.loadSavedLanguage(application))
+        MainUiState(
+            selectedLanguage = AppLanguage.loadSavedLanguage(application).also { lang ->
+                AppLanguage.applyAppLocale(application, lang, syncSystemLocaleManager = false)
+            }
+        )
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
     fun selectLanguage(language: AppLanguage) {
-        AppLanguage.saveLanguage(getApplication(), language)
+        val app = getApplication<Application>()
+        AppLanguage.saveLanguage(app, language)
+        val changed = _uiState.value.selectedLanguage != language
         _uiState.update { it.copy(selectedLanguage = language) }
+        if (changed) {
+            reloadInstalledAppsSilently(language)
+        }
+    }
+
+    fun syncLanguageFromSystemIfChanged() {
+        val app = getApplication<Application>()
+        val latest = AppLanguage.loadSavedLanguage(app)
+        if (_uiState.value.selectedLanguage != latest) {
+            AppLanguage.applyAppLocale(app, latest, syncSystemLocaleManager = false)
+            _uiState.update { it.copy(selectedLanguage = latest) }
+            reloadInstalledAppsSilently(latest)
+        }
+    }
+
+    private fun reloadInstalledAppsSilently(language: AppLanguage) {
+        viewModelScope.launch {
+            val apps = appsRepository.loadInstalledApps(
+                includeSystemApps = _uiState.value.includeSystemApps,
+                languageCode = language.code
+            )
+            _uiState.update { it.copy(installedApps = apps) }
+        }
     }
 
     private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
@@ -151,7 +180,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun loadInstalledApps() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingApps = true) }
-            val apps = appsRepository.loadInstalledApps(_uiState.value.includeSystemApps)
+            val stateSnap = _uiState.value
+            val apps = appsRepository.loadInstalledApps(
+                includeSystemApps = stateSnap.includeSystemApps,
+                languageCode = stateSnap.selectedLanguage.code
+            )
             _uiState.update {
                 it.copy(
                     isLoadingApps = false,
@@ -323,7 +356,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val invalidMsg = "Tên gói APK gốc không hợp lệ: '${candidate.packageName}'"
             appendLog("[Cảnh báo] $invalidMsg")
             _uiState.update {
-                it.copy(statusBannerEntry = { _ -> "⚠️ $invalidMsg" })
+                it.copy(
+                    statusBannerEntry = { s ->
+                        "⚠️ ${AppTranslations.translateLogOrMessage(invalidMsg, s)}"
+                    }
+                )
             }
             return
         }
@@ -339,10 +376,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLog("[Cảnh báo] $invalidMsg")
             _uiState.update {
                 it.copy(
-                    statusBannerEntry = { s -> s.statusPatchFailedFormat(invalidMsg) }
+                    statusBannerEntry = { s ->
+                        s.statusPatchFailedFormat(AppTranslations.translateLogOrMessage(invalidMsg, s))
+                    }
                 )
             }
             return
+        }
+
+        val app = getApplication<Application>()
+        val explicitLangCode = if (AppLanguage.hasExplicitSavedLanguage(app)) {
+            state.selectedLanguage.code
+        } else {
+            null
         }
 
         viewModelScope.launch {
@@ -368,7 +414,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 bypassDrivingRestriction = state.bypassDrivingRestriction,
                 enableGamepadSupport = state.enableGamepadSupport,
                 unlockScreenOrientation = state.unlockScreenOrientation,
-                useRootShellForTouch = state.useRootShellForTouch
+                useRootShellForTouch = state.useRootShellForTouch,
+                preferredLanguageCode = explicitLangCode
             )
 
             when (val patchRes = patcherPipeline.executePatch(config) { appendLog(it) }) {
@@ -545,7 +592,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val invalidMsg = "Tên gói APK gốc không hợp lệ: '${candidate.packageName}'"
             appendLog("[Cảnh báo] $invalidMsg")
             _uiState.update {
-                it.copy(statusBannerEntry = { _ -> "⚠️ $invalidMsg" })
+                it.copy(
+                    statusBannerEntry = { s ->
+                        "⚠️ ${AppTranslations.translateLogOrMessage(invalidMsg, s)}"
+                    }
+                )
             }
             return
         }
@@ -605,7 +656,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.isWorking) return
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isWorking = true) }
+            _uiState.update {
+                it.copy(
+                    isWorking = true,
+                    statusBannerEntry = { s -> s.statusInstallingPatchedApk }
+                )
+            }
             installApkFile(apk, pkg)
         }
     }
@@ -665,7 +721,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private val SAFE_PKG_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
         private val TRAILING_AA_SUFFIX_REGEX = Regex("\\.aa\\d{3}$")
         private val timeFormatter = ThreadLocal.withInitial {
-            SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+            SimpleDateFormat("HH:mm:ss", Locale.US)
         }
     }
 }

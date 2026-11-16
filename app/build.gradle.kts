@@ -136,5 +136,6 @@ dependencies {
     implementation(libs.shizuku.provider)
     implementation(libs.libsu.core)
 
+    testImplementation("junit:junit:4.13.2")
     debugImplementation(libs.androidx.ui.tooling)
 }

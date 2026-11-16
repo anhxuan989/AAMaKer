@@ -50,7 +50,8 @@ data class PatchConfig(
     val enableGamepadSupport: Boolean = true,
     val unlockScreenOrientation: Boolean = true,
     val useRootShellForTouch: Boolean = false,
-    val removeSignatureVerification: Boolean = true
+    val removeSignatureVerification: Boolean = true,
+    val preferredLanguageCode: String? = null
 )
 
 sealed class PatchResult {

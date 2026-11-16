@@ -606,6 +606,20 @@ class ManifestAndArscPatcher(
             setAndroidStringAttr(tokenMetaElem, "name", ATTR_NAME, bridgeTokenMetaName)
             setAndroidStringAttr(tokenMetaElem, "value", ATTR_VALUE, bridgeToken)
         }
+
+        val prefLangMetaName = "com.aamaker.PREFERRED_LANG"
+        appElement.getElements { it.name == "meta-data" }
+            .asSequence()
+            .filter { it.searchAttributeByResourceId(ATTR_NAME)?.valueAsString == prefLangMetaName }
+            .toList()
+            .forEach { it.removeSelf() }
+
+        val prefLang = config.preferredLanguageCode?.trim()?.lowercase()
+        if (!prefLang.isNullOrEmpty()) {
+            val langMetaElem = appElement.createChildElement("meta-data")
+            setAndroidStringAttr(langMetaElem, "name", ATTR_NAME, prefLangMetaName)
+            setAndroidStringAttr(langMetaElem, "value", ATTR_VALUE, prefLang)
+        }
     }
 
     private fun injectParkedAppCompatibility(

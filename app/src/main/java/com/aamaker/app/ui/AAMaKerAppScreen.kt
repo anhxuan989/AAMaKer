@@ -94,6 +94,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -347,6 +348,7 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
             LanguagePickerDialog(
                 currentLanguage = state.selectedLanguage,
                 strings = strings,
+                layoutDirection = layoutDirection,
                 onSelectLanguage = { lang ->
                     viewModel.selectLanguage(lang)
                     showLanguageDialog = false
@@ -517,68 +519,76 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
 private fun LanguagePickerDialog(
     currentLanguage: AppLanguage,
     strings: AppStrings,
+    layoutDirection: LayoutDirection,
     onSelectLanguage: (AppLanguage) -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(
-                text = strings.languageDialogTitle,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
+            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+                Text(
+                    text = strings.languageDialogTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         },
         text = {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 400.dp)
-            ) {
-                itemsIndexed(AppLanguage.entries, key = { _, lang -> lang.code }) { index, lang ->
-                    val isSelected = lang == currentLanguage
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.small)
-                            .clickable { onSelectLanguage(lang) }
-                            .padding(horizontal = 8.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = isSelected,
-                            onClick = null
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = lang.nativeName,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                color = MaterialTheme.colorScheme.onSurface
+            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                ) {
+                    itemsIndexed(AppLanguage.entries, key = { _, lang -> lang.code }) { index, lang ->
+                        val isSelected = lang == currentLanguage
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.small)
+                                .clickable { onSelectLanguage(lang) }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = null
                             )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = lang.nativeName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "${lang.englishName} (${lang.code.uppercase()})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             Text(
-                                text = "${lang.englishName} (${lang.code.uppercase()})",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = lang.flagEmoji,
+                                fontSize = 18.sp
                             )
                         }
-                        Text(
-                            text = lang.flagEmoji,
-                            fontSize = 18.sp
-                        )
-                    }
-                    if (index < AppLanguage.entries.lastIndex) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                        )
+                        if (index < AppLanguage.entries.lastIndex) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                            )
+                        }
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(strings.closeButton)
+            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+                TextButton(onClick = onDismiss) {
+                    Text(strings.closeButton)
+                }
             }
         }
     )
@@ -804,11 +814,16 @@ private fun CandidateAppRow(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
+                val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
                 Icon(
                     imageVector = Icons.Outlined.ChevronRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier
+                        .size(20.dp)
+                        .graphicsLayer {
+                            if (isRtl) scaleX = -1f
+                        }
                 )
             }
 
@@ -900,7 +915,7 @@ private fun ImportApkSection(
                     onClick = onPickExternalFile,
                     modifier = Modifier.weight(1f),
                     shape = MaterialTheme.shapes.medium,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.FolderOpen,
@@ -910,7 +925,8 @@ private fun ImportApkSection(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.chooseFileButton,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -919,7 +935,7 @@ private fun ImportApkSection(
                     onClick = onPickExternalFileDirectInstall,
                     modifier = Modifier.weight(1f),
                     shape = MaterialTheme.shapes.medium,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
@@ -929,7 +945,8 @@ private fun ImportApkSection(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.chooseFileDirectInstallButton,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1465,7 +1482,7 @@ private fun PatchAndInstallTab(
                         onClick = { viewModel.startPatchAndInstall(installImmediately = false) },
                         enabled = !state.isWorking,
                         shape = MaterialTheme.shapes.medium,
-                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 12.dp),
+                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(
@@ -1476,7 +1493,8 @@ private fun PatchAndInstallTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.patchAndSaveButton,
-                            maxLines = 1,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -1485,7 +1503,7 @@ private fun PatchAndInstallTab(
                         onClick = viewModel::startDirectInstallOriginalApk,
                         enabled = !state.isWorking,
                         shape = MaterialTheme.shapes.medium,
-                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 12.dp),
+                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(
@@ -1496,7 +1514,8 @@ private fun PatchAndInstallTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.directInstallNoPatchButton,
-                            maxLines = 1,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -1550,7 +1569,8 @@ private fun PatchAndInstallTab(
                     Text(
                         text = strings.saveToDownloadButton,
                         style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1569,7 +1589,8 @@ private fun PatchAndInstallTab(
                     Text(
                         text = strings.chooseSaveFolderButton,
                         style = MaterialTheme.typography.labelMedium,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -1813,7 +1834,8 @@ private fun EnvironmentDiagnosticTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.openAASettingsButton,
-                            maxLines = 1,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -1831,7 +1853,8 @@ private fun EnvironmentDiagnosticTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.recheckButton,
-                            maxLines = 1,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
                     }

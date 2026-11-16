@@ -664,6 +664,15 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
         val msg = when (currentLang()) {
             "vi" -> "🚗 Đang nạp giao diện $appName lên Android Auto..."
+            "zh" -> "🚗 正在加载 $appName 到 Android Auto..."
+            "es" -> "🚗 Cargando interfaz de $appName en Android Auto..."
+            "hi" -> "🚗 Android Auto पर $appName लोड हो रहा है..."
+            "ar" -> "🚗 جاري تحميل واجهة $appName على Android Auto..."
+            "pt" -> "🚗 Carregando interface de $appName no Android Auto..."
+            "ru" -> "🚗 Загрузка интерфейса $appName в Android Auto..."
+            "ja" -> "🚗 Android Auto に $appName を読み込んでいます..."
+            "de" -> "🚗 Lade $appName-Oberfläche auf Android Auto..."
+            "fr" -> "🚗 Chargement de l'interface $appName sur Android Auto..."
             else -> "🚗 Loading $appName UI onto Android Auto..."
         }
         getOrCreateSurfacePostHandler().post {
@@ -1072,7 +1081,29 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         return x in 0f..maxHitX && y in minHitY..h.toFloat()
     }
 
-    private fun currentLang(): String = java.util.Locale.getDefault().language.lowercase()
+    private fun currentLang(): String {
+        val metaLang = try {
+            val appCtx = carContext.applicationContext
+            val ai = appCtx.packageManager.getApplicationInfo(
+                appCtx.packageName,
+                android.content.pm.PackageManager.GET_META_DATA
+            )
+            ai.metaData?.getString("com.aamaker.PREFERRED_LANG")
+                ?.trim()
+                ?.substringBefore('-')
+                ?.substringBefore('_')
+                ?.lowercase()
+        } catch (_: Throwable) {
+            null
+        }
+        if (!metaLang.isNullOrEmpty()) {
+            return metaLang
+        }
+        return java.util.Locale.getDefault().language
+            .substringBefore('-')
+            .substringBefore('_')
+            .lowercase()
+    }
 
     private fun isRootShellAllowed(): Boolean {
         return try {
@@ -2034,6 +2065,15 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             } else {
                 val noLauncherMsg = when (currentLang()) {
                     "vi" -> "Không tìm thấy Launcher Activity mặc định trong APK"
+                    "zh" -> "未在 APK 中找到默认启动 Activity"
+                    "es" -> "No se encontró una Launcher Activity predeterminada en el APK"
+                    "hi" -> "APK में डिफ़ॉल्ट लॉन्चर Activity नहीं मिली"
+                    "ar" -> "لم يتم العثور على نشاط التشغيل الافتراضي في APK"
+                    "pt" -> "Launcher Activity padrão não encontrada no APK"
+                    "ru" -> "В APK не найдена стандартная Launcher Activity"
+                    "ja" -> "APK 内にデフォルトのランチャー Activity が見つかりません"
+                    "de" -> "Keine Standard-Launcher-Activity in der APK gefunden"
+                    "fr" -> "Aucune Launcher Activity par défaut trouvée dans l'APK"
                     else -> "Default Launcher Activity not found in APK"
                 }
                 CarToast.makeText(
@@ -2045,6 +2085,15 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         } catch (e: Exception) {
             val errPrefix = when (currentLang()) {
                 "vi" -> "Lỗi mở Activity"
+                "zh" -> "启动 Activity 失败"
+                "es" -> "Error al abrir Activity"
+                "hi" -> "Activity खोलने में त्रुटि"
+                "ar" -> "خطأ في فتح النشاط"
+                "pt" -> "Erro ao abrir Activity"
+                "ru" -> "Ошибка запуска Activity"
+                "ja" -> "Activity 起動エラー"
+                "de" -> "Fehler beim Starten der Activity"
+                "fr" -> "Erreur à l'ouverture de l'Activity"
                 else -> "Error launching Activity"
             }
             CarToast.makeText(
@@ -2265,8 +2314,21 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         textSize = 36f
                         textAlign = Paint.Align.CENTER
                     }
+                    val fallbackMsg = when (currentLang()) {
+                        "vi" -> "AAMaKer Surface Bridge đang hoạt động (${width}x${height})"
+                        "zh" -> "AAMaKer 画面桥接已激活 (${width}x${height})"
+                        "es" -> "AAMaKer Surface Bridge activo (${width}x${height})"
+                        "hi" -> "AAMaKer Surface Bridge सक्रिय (${width}x${height})"
+                        "ar" -> "جسر عرض AAMaKer نشط (${width}x${height})"
+                        "pt" -> "AAMaKer Surface Bridge ativo (${width}x${height})"
+                        "ru" -> "AAMaKer Surface Bridge активен (${width}x${height})"
+                        "ja" -> "AAMaKer Surface Bridge 稼働中 (${width}x${height})"
+                        "de" -> "AAMaKer Surface Bridge aktiv (${width}x${height})"
+                        "fr" -> "AAMaKer Surface Bridge actif (${width}x${height})"
+                        else -> "AAMaKer Surface Bridge Active (${width}x${height})"
+                    }
                     canvas.drawText(
-                        "AAMaKer Surface Bridge Active (${width}x${height})",
+                        fallbackMsg,
                         width / 2f,
                         height / 2f,
                         paint

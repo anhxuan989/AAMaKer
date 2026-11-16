@@ -1,9 +1,13 @@
 package com.aamaker.app.i18n
 
+import android.app.LocaleManager
 import android.content.Context
+import android.os.Build
+import android.os.LocaleList
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.patcher.model.CarAppCategory
 import com.aamaker.core.patcher.model.PatchStrategy
+import java.util.Locale
 
 enum class AppLanguage(
     val code: String,
@@ -27,15 +31,48 @@ enum class AppLanguage(
         private const val PREFS_NAME = "aamaker_i18n_prefs"
         private const val KEY_LANG = "selected_language_code"
 
-        fun fromCode(code: String?): AppLanguage {
-            return entries.firstOrNull { it.code.equals(code, ignoreCase = true) } ?: EN
+        fun fromCodeOrNull(code: String?): AppLanguage? {
+            if (code.isNullOrBlank()) return null
+            val normalized = code.trim()
+                .substringBefore('-')
+                .substringBefore('_')
+            return entries.firstOrNull { it.code.equals(normalized, ignoreCase = true) }
+        }
+
+        fun fromCode(code: String?): AppLanguage = fromCodeOrNull(code) ?: EN
+
+        fun hasExplicitSavedLanguage(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val lm = runCatching { context.getSystemService(LocaleManager::class.java) }.getOrNull()
+                val appLocales = lm?.applicationLocales
+                if (appLocales != null && !appLocales.isEmpty) {
+                    return true
+                }
+            }
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return prefs.contains(KEY_LANG)
         }
 
         fun loadSavedLanguage(context: Context): AppLanguage {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val lm = runCatching { context.getSystemService(LocaleManager::class.java) }.getOrNull()
+                val appLocales = lm?.applicationLocales
+                if (appLocales != null && !appLocales.isEmpty) {
+                    val sysTag = appLocales.get(0)?.language
+                    fromCodeOrNull(sysTag)?.let { detected ->
+                        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit()
+                            .putString(KEY_LANG, detected.code)
+                            .apply()
+                        return detected
+                    }
+                }
+            }
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-            val savedCode = prefs.getString(KEY_LANG, EN.code)
-            return fromCode(savedCode)
+            if (prefs.contains(KEY_LANG)) {
+                return fromCode(prefs.getString(KEY_LANG, EN.code))
+            }
+            return fromCodeOrNull(Locale.getDefault().language) ?: EN
         }
 
         fun saveLanguage(context: Context, language: AppLanguage) {
@@ -43,6 +80,25 @@ enum class AppLanguage(
                 .edit()
                 .putString(KEY_LANG, language.code)
                 .apply()
+            applyAppLocale(context, language, syncSystemLocaleManager = true)
+        }
+
+        fun applyAppLocale(
+            context: Context,
+            language: AppLanguage,
+            syncSystemLocaleManager: Boolean = false
+        ) {
+            runCatching {
+                val targetLocale = Locale.forLanguageTag(language.code)
+                Locale.setDefault(targetLocale)
+                if (syncSystemLocaleManager && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val lm = context.getSystemService(LocaleManager::class.java)
+                    val desired = LocaleList.forLanguageTags(language.code)
+                    if (lm != null && lm.applicationLocales != desired) {
+                        lm.applicationLocales = desired
+                    }
+                }
+            }
         }
     }
 }
@@ -307,6 +363,21 @@ data class AppStrings(
             AppLanguage.FR -> "APK seul (Activez dans LSPosed pour un bypass complet)"
         }
 
+    val statusInstallingPatchedApk: String
+        get() = when (language) {
+            AppLanguage.EN -> "Installing patched APK..."
+            AppLanguage.VI -> "Đang cài APK đã patch..."
+            AppLanguage.ZH -> "正在安装修补后的 APK..."
+            AppLanguage.ES -> "Instalando APK parcheado..."
+            AppLanguage.HI -> "पैच किया गया APK इंस्टॉल हो रहा है..."
+            AppLanguage.AR -> "جاري تثبيت ملف APK المعدل..."
+            AppLanguage.PT -> "Instalando APK com patch..."
+            AppLanguage.RU -> "Установка пропатченного APK..."
+            AppLanguage.JA -> "パッチ済み APK を導入中..."
+            AppLanguage.DE -> "Installiere gepatchte APK..."
+            AppLanguage.FR -> "Installation de l'APK patché..."
+        }
+
     fun categoryName(category: CarAppCategory): String = when (category) {
         CarAppCategory.NAVIGATION -> categoryNavigation
         CarAppCategory.IOT -> categoryIot
@@ -330,71 +401,93 @@ data class AppStrings(
 }
 
 object AppTranslations {
-    private val REGEX_PAT_0 = Regex("""^\[Shizuku\] Lỗi yêu cầu quyền: (.*)$""")
-    private val REGEX_PAT_1 = Regex("""^Đã nạp: (.*)$""")
-    private val REGEX_PAT_2 = Regex("""^\[Export\] Error saving file: (.*)$""")
-    private val REGEX_PAT_3 = Regex("""^\[Export\] Exported patched APK successfully \((.*) KB\)\.$""")
-    private val REGEX_PAT_4 = Regex("""^\[Storage\] Đã lưu APK đã patch vào bộ nhớ máy: (.*) \((.*) KB\)$""")
-    private val REGEX_PAT_5 = Regex("""^\[Storage\] Đã lưu APK đã patch vào: (.*)$""")
-    private val REGEX_PAT_6 = Regex("""^\[Storage\] Cảnh báo khi lưu vào Download/AAMaKer: (.*)$""")
-    private val REGEX_PAT_7 = Regex("""^--- Bắt đầu cài đặt lên hệ thống với chế độ: (.*) ---$""")
-    private val REGEX_PAT_8 = Regex("""^Ứng dụng gốc: (.*)$""")
-    private val REGEX_PAT_9 = Regex("""^Chế độ Patch: (.*)$""")
-    private val REGEX_PAT_10 = Regex("""^=== HOÀN TẤT PATCH TRONG (\d+)ms ===$""")
-    private val REGEX_PAT_11 = Regex("""^File xuất ra: (.*)$""")
-    private val REGEX_PAT_12 = Regex("""^\[Direct Install\] Phát hiện gói Bundle \((.*)\), đang trích xuất các APK gốc \(giữ nguyên chữ ký\)\.\.\.$""")
-    private val REGEX_PAT_13 = Regex("""^\[Direct Install\] Cài đặt nguyên bản (\d+) file APK \(giữ nguyên chữ ký số gốc\) cho gói (.*)\.\.\.$""")
-    private val REGEX_PAT_14 = Regex("""^\[Direct Install\] Lỗi chuẩn bị APK gốc: (.*)$""")
-    private val REGEX_PAT_15 = Regex("""^Lỗi đọc file APK gốc: (.*)$""")
-    private val REGEX_PAT_16 = Regex("""^\[Merger\] Phát hiện gói Bundle \((.*)\), đang giải nén các APK thành phần\.\.\.$""")
-    private val REGEX_PAT_17 = Regex("""^\[Merger\] Phát hiện (\d+) Split APKs, đang hợp nhất (?:cấu trúc nhị phân \(DEX \+ resources\.arsc \+ Native Libs \+ Assets\)|thành APK đơn)\.\.\.$""")
-    private val REGEX_PAT_17B = Regex("""^\[Merger\] \+ Nạp APK nền \(base\): (.*)$""")
-    private val REGEX_PAT_17C = Regex("""^\[Merger\] \+ Nạp Split APK: (.*)$""")
-    private val REGEX_PAT_18 = Regex("""^\[Merger\] Đang gộp thành phần từ (.*)\.\.\.$""")
-    private val REGEX_PAT_19 = Regex("""^\[Merger\] Đã hợp nhất (?:hoàn chỉnh (\d+) APK thành 1 module duy nhất \((\d+) DEX\)|thành công Split APKs \((.*) KB\))\.$""")
-    private val REGEX_PAT_19B = Regex("""^\[Merger\] \+ Đã hợp nhất (\d+) thành phần Feature Split vào AndroidManifest\.xml\.$""")
-    private val REGEX_PAT_19C = Regex("""^\[Merger\] \+ Đã dọn thư mục ABI không đầy đủ 'lib/(.*)' \((\d+)/(\d+) thư viện \.so\) để tránh lỗi UnsatisfiedLinkError\.$""")
-    private val REGEX_PAT_20 = Regex("""^\[Merger\] \+ (?:Đã tích hợp tài nguyên OBB: (.*) -> (.*)|Gộp dữ liệu OBB: (.*))$""")
-    private val REGEX_PAT_21 = Regex("""^\[Patcher\] \+ Đã kích hoạt chế độ Parked App \(appCategory=game, CAR_LAUNCHER & distractionOptimized\) cho (\d+) Launcher Activity\.$""")
-    private val REGEX_PAT_21B = Regex("""^\[Patcher\] \+ Đã chuẩn hóa (\d+) bảng tài nguyên nén \(Sparse/Compact TypeBlock\) sang định dạng chuẩn để bảo toàn ID tài nguyên\.$""")
-    private val REGEX_PAT_22 = Regex("""^\[Patcher\] \+ Đã tối ưu hóa phần cứng: bật hỗ trợ Gamepad=(true|false), gỡ bỏ bắt buộc cho (\d+) uses-feature\.$""")
-    private val REGEX_PAT_23 = Regex("""^\[Patcher\] Đang đổi tên gói: (.*) -> (.*) \(cập nhật (?:Application, Component, Permission & Authorities|Manifest & Authorities)\)\.\.\.$""")
-    private val REGEX_PAT_24 = Regex("""^\[Patcher\] Đang cập nhật tên hiển thị ứng dụng thành: (.*)$""")
-    private val REGEX_PAT_25 = Regex("""^\[Patcher\] \+ Đã (?:gỡ bỏ|dọn sạch an toàn) (\d+) (?:thuộc tính/meta-data bắt buộc Split APK \(chống lỗi INSTALL_FAILED_MISSING_SPLIT\)|thuộc tính/meta-data Split APK \(bảo toàn tài nguyên dùng chung\))\.$""")
-    private val REGEX_PAT_25B = Regex("""^\[Patcher\] \+ Đã vô hiệu hóa (\d+) thành phần kiểm tra giấy phép Play Licensing\.$""")
-    private val REGEX_PAT_26 = Regex("""^\[Patcher\] \+ Thêm quyền: (.*)$""")
-    private val REGEX_PAT_27 = Regex("""^\[Patcher\] APK đã có sẵn khai báo '(.*)' \(@?([0-9a-fA-FxX]+)\)\.$""")
-    private val REGEX_PAT_28 = Regex("""^\[Patcher\] Đang tạo Binary XML '(.*)' và đăng ký vào bảng resources\.arsc\.\.\.$""")
-    private val REGEX_PAT_29 = Regex("""^\[Patcher\] \+ Đã cấp phát Resource ID @?([0-9a-fA-FxX]+) -> (.*)$""")
-    private val REGEX_PAT_30 = Regex("""^\[Patcher\] \+ Đã gắn (.*)$""")
-    private val REGEX_PAT_31 = Regex("""^\[Patcher\] Đang tiêm (.*) vào AndroidManifest\.xml\.\.\.$""")
-    private val REGEX_PAT_32 = Regex("""^\[Patcher\] \+ Đã tiêm cờ mở khóa khi xe di chuyển \(distractionOptimized\) cho toàn bộ (\d+) Activity\.$""")
-    private val REGEX_PAT_33 = Regex("""^\[Patcher\] \+ Đã tiêm (?:Universal AA Runtime DEX thành|Bootstrap Service DEX cô lập thành) '(.*)' \((.*)(?: KB| bytes — không xung đột AndroidX/Kotlin/Guava)\)\.$""")
-    private val REGEX_PAT_33B = Regex("""^\[Patcher\] \+ Đã đóng gói (\d+) phân đoạn Isolated Car Runtime vào assets/aa_car_res\.dat\.$""")
-    private val REGEX_PAT_34 = Regex("""^\[Patcher\] Cảnh báo khi tiêm DEX: (.*)$""")
-    private val REGEX_PAT_SIGNER_PREPARE = Regex("""^\[Signer\] Đang chuẩn bị khóa RSA-2048 & chứng chỉ X\.509 để ký APK \(Scheme V1 \+ V2 \+ V3(?:, minSdk=(\d+))?\)\.\.\.$""")
-    private val REGEX_PAT_SIGNATURE_WARNING = Regex("""^\[Patcher\] ! Cảnh báo: Phát hiện cơ chế kiểm tra chữ ký gốc tầng Native/C\+\+ \((.*)\) — (.*)$""")
-    private val REGEX_PAT_35 = Regex("""^\[Signer\] Đã ký APK hoàn tất \((.*) KB\)\.$""")
-    private val REGEX_PAT_36 = Regex("""^\[Root\] Đang sao chép APK vào (.*)\.\.\.$""")
-    private val REGEX_PAT_37 = Regex("""^Không thể chép APK vào /data/local/tmp: (.*)$""")
-    private val REGEX_PAT_38 = Regex("""^\[Root\] Kết quả pm install: (.*)$""")
-    private val REGEX_PAT_39 = Regex("""^Lỗi pm install qua Root: (.*)$""")
-    private val REGEX_PAT_40 = Regex("""^\[Root\] Đang cấp quyền SYSTEM_ALERT_WINDOW, PROJECT_MEDIA & bật Touch Bridge cho (.*)\.\.\.$""")
-    private val REGEX_PAT_41 = Regex("""^\[Root\] Ngoại lệ: (.*)$""")
-    private val REGEX_PAT_42 = Regex("""^Lỗi cài đặt qua Root: (.*)$""")
-    private val REGEX_PAT_43 = Regex("""^\[Shizuku\] Thực thi: (.*)$""")
-    private val REGEX_PAT_44 = Regex("""^\[Shizuku\] Kết quả: (.*)$""")
-    private val REGEX_PAT_45 = Regex("""^Cài đặt qua Shizuku thất bại: (.*)$""")
-    private val REGEX_PAT_46 = Regex("""^\[Shizuku\] Ngoại lệ: (.*)$""")
-    private val REGEX_PAT_47 = Regex("""^Lỗi thực thi Shizuku: (.*)$""")
-    private val REGEX_PAT_48 = Regex("""^\[Non-Root Session\] Đã tạo Session #(\d+), đang ghi dữ liệu APK \((.*) KB\)\.\.\.$""")
-    private val REGEX_PAT_49 = Regex("""^\[Non-Root Session\] Cài đặt hoàn tất: (.*)$""")
-    private val REGEX_PAT_50 = Regex("""^\[Non-Root Session\] Lỗi: (.*)$""")
-    private val REGEX_PAT_51 = Regex("""^Lỗi cài đặt qua Session API: (.*)$""")
-    private val REGEX_PAT_52 = Regex("""^Cài đặt thành công gói (.*)$""")
-    private val REGEX_PAT_53 = Regex("""^Cài đặt thất bại \(Mã (-?\d+)\): (.*)$""")
-    private val REGEX_PAT_54 = Regex("""^([A-Za-z0-9_.$]+): Lỗi không xác định khi patch APK$""")
-    private val REGEX_PAT_55 = Regex("""^(\[LỖI NGHIÊM TRỌNG\] )?([A-Za-z0-9_.$]+): (.*)$""")
+    private fun dotRegex(pattern: String): Regex = Regex(pattern, RegexOption.DOT_MATCHES_ALL)
+
+    private const val VI_CONFLICT_HINT =
+        "\nGợi ý: Ứng dụng gốc trên máy có chữ ký khác (Play Store). Hãy gỡ cài đặt bản gốc trước khi cài đè, hoặc bấm nút Tạo ngẫu nhiên (Shuffle) để đổi Package Name cài song song."
+
+    private val REGEX_WARN_PREFIX = dotRegex("""^\[Cảnh báo\] (.*)$""")
+    private val REGEX_INVALID_ORIG_PKG = dotRegex("""^Tên gói APK gốc không hợp lệ: '(.*)'$""")
+    private val REGEX_INVALID_CUSTOM_PKG = dotRegex(
+        """^Tên gói \(Package Name\) không hợp lệ: '(.*?)'\. (?:Định dạng đúng ví dụ: com\.example\.app|Vui lòng nhập định dạng chuẩn Android \(ví dụ: com\.example\.app\)\.?)$"""
+    )
+    private val REGEX_INVALID_TARGET_PKG = dotRegex("""^Package Name đích không hợp lệ: '(.*)'$""")
+    private val REGEX_INVALID_INSTALL_PKG = dotRegex("""^Tên gói cài đặt không hợp lệ: '(.*)'$""")
+    private val REGEX_BUNDLE_TOO_MANY_ENTRIES = dotRegex(
+        """^Gói Bundle chứa quá nhiều mục \((\d+)\)(?:!|, hủy giải nén để tránh treo máy\.)$"""
+    )
+    private val REGEX_UNSAFE_EXTRACT_PATH = dotRegex("""^Phát hiện đường dẫn giải nén không (?:hợp lệ|an toàn): (.*)$""")
+    private val REGEX_NO_APK_IN_BUNDLE = dotRegex("""^Không tìm thấy file \.apk nào bên trong (.*)$""")
+    private val REGEX_ROOT_INSTALL_TIMEOUT = dotRegex("""^Quá thời gian chờ \((\d+)s\) khi chạy pm install qua Root\.$""")
+    private val REGEX_SHIZUKU_INSTALL_TIMEOUT = dotRegex(
+        """^Quá thời gian chờ \((\d+)s\) khi cài đặt qua Shizuku\. Vui lòng kiểm tra thông báo xác nhận cài đặt hoặc khởi động lại Shizuku\.$"""
+    )
+
+    private val REGEX_PAT_0 = dotRegex("""^\[Shizuku\] Lỗi yêu cầu quyền: (.*)$""")
+    private val REGEX_PAT_1 = dotRegex("""^Đã nạp: (.*)$""")
+    private val REGEX_PAT_2 = dotRegex("""^\[Export\] Error saving file: (.*)$""")
+    private val REGEX_PAT_3 = dotRegex("""^\[Export\] Exported patched APK successfully \(([^()\r\n]+) KB\)\.$""")
+    private val REGEX_PAT_4 = dotRegex("""^\[Storage\] Đã lưu APK đã patch vào bộ nhớ máy: (.*) \(([^()\r\n]+) KB\)$""")
+    private val REGEX_PAT_5 = dotRegex("""^\[Storage\] Đã lưu APK đã patch vào: (.*)$""")
+    private val REGEX_PAT_6 = dotRegex("""^\[Storage\] Cảnh báo khi lưu vào Download/AAMaKer: (.*)$""")
+    private val REGEX_PAT_7 = dotRegex("""^--- Bắt đầu cài đặt lên hệ thống với chế độ: (.*?) ---$""")
+    private val REGEX_PAT_8 = dotRegex("""^Ứng dụng gốc: (.*)$""")
+    private val REGEX_PAT_9 = dotRegex("""^Chế độ Patch: (.*)$""")
+    private val REGEX_PAT_10 = dotRegex("""^=== HOÀN TẤT PATCH TRONG (\d+)ms ===$""")
+    private val REGEX_PAT_11 = dotRegex("""^File xuất ra: (.*)$""")
+    private val REGEX_PAT_12 = dotRegex("""^\[Direct Install\] Phát hiện gói Bundle \((.*?)\), đang trích xuất các APK gốc \(giữ nguyên chữ ký\)\.\.\.$""")
+    private val REGEX_PAT_13 = dotRegex("""^\[Direct Install\] Cài đặt nguyên bản (\d+) file APK \(giữ nguyên chữ ký số gốc\) cho gói (.*?)\.\.\.$""")
+    private val REGEX_PAT_14 = dotRegex("""^\[Direct Install\] Lỗi chuẩn bị APK gốc: (.*)$""")
+    private val REGEX_PAT_15 = dotRegex("""^Lỗi đọc file APK gốc: (.*)$""")
+    private val REGEX_PAT_16 = dotRegex("""^\[Merger\] Phát hiện gói Bundle \((.*?)\), đang giải nén các (?:APK )?thành phần\.\.\.$""")
+    private val REGEX_PAT_17 = dotRegex("""^\[Merger\] Phát hiện (\d+) Split APKs, đang hợp nhất (?:cấu trúc nhị phân \(DEX \+ resources\.arsc \+ Native Libs \+ Assets\)|thành APK đơn)\.\.\.$""")
+    private val REGEX_PAT_17B = dotRegex("""^\[Merger\] \+ Nạp APK nền \(base\): (.*)$""")
+    private val REGEX_PAT_17C = dotRegex("""^\[Merger\] \+ Nạp Split APK: (.*)$""")
+    private val REGEX_PAT_18 = dotRegex("""^\[Merger\] Đang gộp thành phần từ (.*?)\.\.\.$""")
+    private val REGEX_PAT_19 = dotRegex("""^\[Merger\] Đã hợp nhất (?:hoàn chỉnh (\d+) APK thành 1 module duy nhất \((\d+) DEX\)|thành công Split APKs \(([^()\r\n]+) KB\))\.$""")
+    private val REGEX_PAT_19B = dotRegex("""^\[Merger\] \+ Đã hợp nhất (\d+) thành phần Feature Split vào AndroidManifest\.xml\.$""")
+    private val REGEX_PAT_19C = dotRegex("""^\[Merger\] \+ Đã dọn thư mục ABI không đầy đủ 'lib/(.*?)' \((\d+)/(\d+) thư viện \.so\) để tránh lỗi UnsatisfiedLinkError\.$""")
+    private val REGEX_PAT_20 = dotRegex("""^\[Merger\] \+ (?:Đã tích hợp tài nguyên OBB: (.*?) -> (.*)|Gộp dữ liệu OBB: (.*))$""")
+    private val REGEX_PAT_21 = dotRegex("""^\[Patcher\] \+ Đã kích hoạt chế độ Parked App \(appCategory=game, CAR_LAUNCHER & distractionOptimized\) cho (\d+) Launcher Activity\.$""")
+    private val REGEX_PAT_21B = dotRegex("""^\[Patcher\] \+ Đã chuẩn hóa (\d+) bảng tài nguyên nén \(Sparse/Compact TypeBlock\) sang định dạng chuẩn để bảo toàn ID tài nguyên\.$""")
+    private val REGEX_PAT_22 = dotRegex("""^\[Patcher\] \+ Đã tối ưu hóa phần cứng: bật hỗ trợ Gamepad=(true|false), gỡ bỏ bắt buộc cho (\d+) uses-feature\.$""")
+    private val REGEX_PAT_23 = dotRegex("""^\[Patcher\] Đang đổi tên gói: (.*?) -> (.*?) \(cập nhật (?:Application, Component, Permission & Authorities|Manifest & Authorities)\)\.\.\.$""")
+    private val REGEX_PAT_24 = dotRegex("""^\[Patcher\] Đang cập nhật tên hiển thị ứng dụng thành: (.*)$""")
+    private val REGEX_PAT_25 = dotRegex("""^\[Patcher\] \+ Đã (?:gỡ bỏ|dọn sạch an toàn) (\d+) (?:thuộc tính/meta-data bắt buộc Split APK \(chống lỗi INSTALL_FAILED_MISSING_SPLIT\)|thuộc tính/meta-data Split APK \(bảo toàn tài nguyên dùng chung\))\.$""")
+    private val REGEX_PAT_25B = dotRegex("""^\[Patcher\] \+ Đã vô hiệu hóa (\d+) thành phần kiểm tra giấy phép Play Licensing\.$""")
+    private val REGEX_PAT_26 = dotRegex("""^\[Patcher\] \+ Thêm quyền: (.*)$""")
+    private val REGEX_PAT_27 = dotRegex("""^\[Patcher\] APK đã có sẵn khai báo '(.*?)' \(@?(?:0[xX])?([0-9a-fA-F]+)\)\.$""")
+    private val REGEX_PAT_28 = dotRegex("""^\[Patcher\] Đang tạo Binary XML '(.*?)' và đăng ký vào bảng resources\.arsc\.\.\.$""")
+    private val REGEX_PAT_29 = dotRegex("""^\[Patcher\] \+ Đã cấp phát Resource ID @?(?:0[xX])?([0-9a-fA-F]+) -> (.*)$""")
+    private val REGEX_PAT_30 = dotRegex("""^\[Patcher\] \+ Đã gắn (.*)$""")
+    private val REGEX_PAT_31 = dotRegex("""^\[Patcher\] Đang tiêm (.*?) vào AndroidManifest\.xml\.\.\.$""")
+    private val REGEX_PAT_32 = dotRegex("""^\[Patcher\] \+ Đã tiêm cờ mở khóa khi xe di chuyển \(distractionOptimized\) cho toàn bộ (\d+) Activity\.$""")
+    private val REGEX_PAT_33 = dotRegex("""^\[Patcher\] \+ Đã tiêm (Universal AA Runtime DEX|Bootstrap Service DEX cô lập) thành '(.*?)' \(([^()\r\n]+?) (KB|bytes — không xung đột AndroidX/Kotlin/Guava)\)\.$""")
+    private val REGEX_PAT_33B = dotRegex("""^\[Patcher\] \+ Đã đóng gói (\d+) phân đoạn Isolated Car Runtime vào assets/aa_car_res\.dat\.$""")
+    private val REGEX_PAT_34 = dotRegex("""^\[Patcher\] Cảnh báo khi tiêm DEX: (.*)$""")
+    private val REGEX_PAT_SIGNER_PREPARE = dotRegex("""^\[Signer\] Đang chuẩn bị khóa RSA-2048 & chứng chỉ X\.509 để ký APK \(Scheme V1 \+ V2 \+ V3(?:, minSdk=(\d+))?\)\.\.\.$""")
+    private val REGEX_PAT_SIGNATURE_WARNING = dotRegex("""^\[Patcher\] ! Cảnh báo: Phát hiện cơ chế kiểm tra chữ ký gốc tầng Native/C\+\+ \((.*?)\) — (.*)$""")
+    private val REGEX_PAT_35 = dotRegex("""^\[Signer\] Đã ký APK hoàn tất \(([^()\r\n]+) KB\)\.$""")
+    private val REGEX_PAT_36 = dotRegex("""^\[Root\] Đang sao chép APK vào (.*?)\.\.\.$""")
+    private val REGEX_PAT_37 = dotRegex("""^Không thể chép APK vào /data/local/tmp: (.*)$""")
+    private val REGEX_PAT_38 = dotRegex("""^\[Root\] Kết quả pm install: (.*)$""")
+    private val REGEX_PAT_39 = dotRegex("""^Lỗi pm install qua Root: (.*)$""")
+    private val REGEX_PAT_40 = dotRegex("""^\[Root\] Đang cấp quyền SYSTEM_ALERT_WINDOW, PROJECT_MEDIA & bật Touch Bridge cho (.*?)\.\.\.$""")
+    private val REGEX_PAT_41 = dotRegex("""^\[Root\] Ngoại lệ: (.*)$""")
+    private val REGEX_PAT_42 = dotRegex("""^Lỗi cài đặt qua Root: (.*)$""")
+    private val REGEX_PAT_43 = dotRegex("""^\[Shizuku\] Thực thi: (.*)$""")
+    private val REGEX_PAT_44 = dotRegex("""^\[Shizuku\] Kết quả: (.*)$""")
+    private val REGEX_PAT_45 = dotRegex("""^Cài đặt qua Shizuku thất bại: (.*)$""")
+    private val REGEX_PAT_46 = dotRegex("""^\[Shizuku\] Ngoại lệ: (.*)$""")
+    private val REGEX_PAT_47 = dotRegex("""^Lỗi thực thi Shizuku: (.*)$""")
+    private val REGEX_PAT_48 = dotRegex("""^\[Non-Root Session\] Đã tạo Session #(\d+), đang ghi dữ liệu APK \(([^()\r\n]+) KB\)\.\.\.$""")
+    private val REGEX_PAT_49 = dotRegex("""^\[Non-Root Session\] Cài đặt hoàn tất: (.*)$""")
+    private val REGEX_PAT_50 = dotRegex("""^\[Non-Root Session\] Lỗi: (.*)$""")
+    private val REGEX_PAT_51 = dotRegex("""^Lỗi cài đặt qua Session API: (.*)$""")
+    private val REGEX_PAT_52 = dotRegex("""^Cài đặt thành công gói (.*)$""")
+    private val REGEX_PAT_53 = dotRegex("""^Cài đặt thất bại \(Mã (-?\d+)\): (.*)$""")
+    private val REGEX_PAT_54 = dotRegex("""^([A-Za-z0-9_.$]+): Lỗi không xác định khi patch APK$""")
+    private val REGEX_PAT_55 = dotRegex("""^(\[LỖI NGHIÊM TRỌNG\] )?([A-Za-z0-9_.$]+): (.*)$""")
 
     fun forLanguage(lang: AppLanguage): AppStrings = when (lang) {
         AppLanguage.EN -> EN_STRINGS
@@ -818,7 +911,7 @@ object AppTranslations {
         language = AppLanguage.HI,
         appSubtitle = "Android Auto पैचर और इंस्टॉलर",
         refreshTooltip = "रीफ़्रेश",
-        languageDialogTitle = "भाषा (Language)",
+        languageDialogTitle = "भाषा",
         closeButton = "बंद करें",
         navSelectApp = "ऐप्स",
         navPatchInstall = "पैच और इंस्टॉल",
@@ -1521,7 +1614,75 @@ object AppTranslations {
         statusExportFailed = "❌ Échec de l'enregistrement."
     )
 
+    private fun localizedConflictHint(lang: AppLanguage): String = when (lang) {
+        AppLanguage.EN -> "\nHint: An app with a different signature (Play Store) is already installed. Uninstall the original app before overwriting, or tap Randomize (Shuffle) to change the Package Name and install side-by-side."
+        AppLanguage.VI -> VI_CONFLICT_HINT
+        AppLanguage.ZH -> "\n提示：设备上已安装的同名应用签名不同 (Play 商店版)。请先卸载原版应用再覆盖安装，或点击随机按钮 (Shuffle) 修改包名以共存安装。"
+        AppLanguage.ES -> "\nSugerencia: La aplicación instalada tiene una firma diferente (Play Store). Desinstale la versión original antes de sobrescribir, o pulse Aleatorio (Shuffle) para cambiar el nombre del paquete e instalar en paralelo."
+        AppLanguage.HI -> "\nसुझाव: डिवाइस पर मौजूद मूल ऐप का हस्ताक्षर अलग (Play Store) है। ओवरराइट करने से पहले मूल ऐप अनइंस्टॉल करें, या साथ में इंस्टॉल करने के लिए रैंडम (Shuffle) दबाकर पैकेज नाम बदलें।"
+        AppLanguage.AR -> "\nتلميح: التطبيق الأصلي على الجهاز يحمل توقيعاً مختلفاً (متجر Play). يرجى إلغاء تثبيت النسخة الأصلية أولاً، أو الضغط على زر عشوائي (Shuffle) لتغيير اسم الحزمة والتثبيت بجانبه."
+        AppLanguage.PT -> "\nDica: O aplicativo instalado no aparelho possui assinatura diferente (Play Store). Desinstale o original antes de sobrescrever, ou toque em Aleatório (Shuffle) para mudar o Nome do Pacote e instalar lado a lado."
+        AppLanguage.RU -> "\nПодсказка: Установленное приложение имеет другую подпись (Play Store). Удалите оригинал перед установкой поверх или нажмите «Случайно» (Shuffle), чтобы изменить имя пакета и установить рядом."
+        AppLanguage.JA -> "\nヒント: 端末上の元アプリと署名 (Play ストア) が異なります。上書き前に元のアプリをアンインストールするか、ランダム (Shuffle) ボタンを押してパッケージ名を変更し共存導入してください。"
+        AppLanguage.DE -> "\nHinweis: Die installierte Original-App hat eine andere Signatur (Play Store). Deinstallieren Sie das Original vor dem Überschreiben oder tippen Sie auf Zufällig (Shuffle), um den Paketnamen für eine Parallelinstallation zu ändern."
+        AppLanguage.FR -> "\nAstuce : L'application déjà installée possède une signature différente (Play Store). Désinstallez l'originale avant d'écraser, ou appuyez sur Aléatoire (Shuffle) pour changer le nom du package et installer en parallèle."
+    }
+
+    private fun translateEmbeddedFragments(text: String, lang: AppLanguage): String {
+        if (lang == AppLanguage.VI || text.isEmpty()) return text
+        var result = text
+        if (result.contains(VI_CONFLICT_HINT)) {
+            result = result.replace(VI_CONFLICT_HINT, localizedConflictHint(lang))
+        }
+        if (result.contains("Quá thời gian chờ (Timeout)")) {
+            val timeoutLabel = when (lang) {
+                AppLanguage.EN -> "Timed out (Timeout)"
+                AppLanguage.VI -> "Quá thời gian chờ (Timeout)"
+                AppLanguage.ZH -> "等待超时 (Timeout)"
+                AppLanguage.ES -> "Tiempo de espera agotado (Timeout)"
+                AppLanguage.HI -> "समय समाप्त (Timeout)"
+                AppLanguage.AR -> "انتهت مهلة الانتظار (Timeout)"
+                AppLanguage.PT -> "Tempo limite esgotado (Timeout)"
+                AppLanguage.RU -> "Превышено время ожидания (Timeout)"
+                AppLanguage.JA -> "タイムアウト (Timeout)"
+                AppLanguage.DE -> "Zeitüberschreitung (Timeout)"
+                AppLanguage.FR -> "Délai d'attente dépassé (Timeout)"
+            }
+            result = result.replace("Quá thời gian chờ (Timeout)", timeoutLabel)
+        }
+        if (result.contains("Không thể mở hộp thoại xác nhận cài đặt")) {
+            val dialogErr = when (lang) {
+                AppLanguage.EN -> "Unable to open the installation confirmation dialog"
+                AppLanguage.VI -> "Không thể mở hộp thoại xác nhận cài đặt"
+                AppLanguage.ZH -> "无法打开安装确认对话框"
+                AppLanguage.ES -> "No se pudo abrir el diálogo de confirmación de instalación"
+                AppLanguage.HI -> "इंस्टॉलेशन पुष्टि संवाद नहीं खोला जा सका"
+                AppLanguage.AR -> "تعذر فتح نافذة تأكيد التثبيت"
+                AppLanguage.PT -> "Não foi possível abrir a caixa de diálogo de confirmação de instalação"
+                AppLanguage.RU -> "Не удалось открыть диалог подтверждения установки"
+                AppLanguage.JA -> "インストール確認ダイアログを開けませんでした"
+                AppLanguage.DE -> "Installationsbestätigungsdialog konnte nicht geöffnet werden"
+                AppLanguage.FR -> "Impossible d'ouvrir la boîte de dialogue de confirmation d'installation"
+            }
+            result = result.replace("Không thể mở hộp thoại xác nhận cài đặt", dialogErr)
+        }
+        return result
+    }
+
     fun translateLogOrMessage(raw: String, strings: AppStrings): String {
+        val out = translateInternal(raw, strings, depth = 0)
+        return translateEmbeddedFragments(out, strings.language)
+    }
+
+    private fun translateNested(raw: String, strings: AppStrings, depth: Int): String {
+        if (depth >= 4 || raw.isEmpty()) {
+            return translateEmbeddedFragments(raw, strings.language)
+        }
+        val out = translateInternal(raw, strings, depth + 1)
+        return translateEmbeddedFragments(out, strings.language)
+    }
+
+    private fun translateInternal(raw: String, strings: AppStrings, depth: Int): String {
         val lang = strings.language
 
         when (raw) {
@@ -1928,10 +2089,284 @@ object AppTranslations {
                 AppLanguage.FR -> "En attente de la confirmation de l'utilisateur sur l'écran..."
                 else -> raw
             }
+            "Danh sách file APK đầu vào trống!" -> return when (lang) {
+                AppLanguage.EN -> "Input APK file list is empty!"
+                AppLanguage.ZH -> "输入 APK 文件列表为空！"
+                AppLanguage.ES -> "¡La lista de archivos APK de entrada está vacía!"
+                AppLanguage.HI -> "इनपुट APK फ़ाइल सूची खाली है!"
+                AppLanguage.AR -> "قائمة ملفات APK المدخلة فارغة!"
+                AppLanguage.PT -> "A lista de arquivos APK de entrada está vazia!"
+                AppLanguage.RU -> "Список входных файлов APK пуст!"
+                AppLanguage.JA -> "入力 APK ファイルリストが空です！"
+                AppLanguage.DE -> "Eingabe-APK-Dateiliste ist leer!"
+                AppLanguage.FR -> "La liste des fichiers APK d'entrée est vide !"
+                else -> raw
+            }
+            "APK không chứa AndroidManifest.xml hợp lệ!" -> return when (lang) {
+                AppLanguage.EN -> "APK does not contain a valid AndroidManifest.xml!"
+                AppLanguage.ZH -> "APK 不包含有效的 AndroidManifest.xml！"
+                AppLanguage.ES -> "¡El APK no contiene un AndroidManifest.xml válido!"
+                AppLanguage.HI -> "APK में मान्य AndroidManifest.xml नहीं है!"
+                AppLanguage.AR -> "لا يحتوي ملف APK على AndroidManifest.xml صالح!"
+                AppLanguage.PT -> "O APK não contém um AndroidManifest.xml válido!"
+                AppLanguage.RU -> "APK не содержит корректного AndroidManifest.xml!"
+                AppLanguage.JA -> "APK に有効な AndroidManifest.xml が含まれていません！"
+                AppLanguage.DE -> "APK enthält keine gültige AndroidManifest.xml!"
+                AppLanguage.FR -> "L'APK ne contient pas de fichier AndroidManifest.xml valide !"
+                else -> raw
+            }
+            "AndroidManifest.xml thiếu thẻ gốc <manifest>!" -> return when (lang) {
+                AppLanguage.EN -> "AndroidManifest.xml is missing the root <manifest> tag!"
+                AppLanguage.ZH -> "AndroidManifest.xml 缺少根标签 <manifest>！"
+                AppLanguage.ES -> "¡Falta la etiqueta raíz <manifest> en AndroidManifest.xml!"
+                AppLanguage.HI -> "AndroidManifest.xml में मूल <manifest> टैग गायब है!"
+                AppLanguage.AR -> "ملف AndroidManifest.xml يفتقد الوسم الجذري <manifest>!"
+                AppLanguage.PT -> "AndroidManifest.xml não possui a tag raiz <manifest>!"
+                AppLanguage.RU -> "В AndroidManifest.xml отсутствует корневой тег <manifest>!"
+                AppLanguage.JA -> "AndroidManifest.xml にルート <manifest> タグがありません！"
+                AppLanguage.DE -> "In AndroidManifest.xml fehlt das Wurzel-Tag <manifest>!"
+                AppLanguage.FR -> "La balise racine <manifest> est manquante dans AndroidManifest.xml !"
+                else -> raw
+            }
+            "Không tìm thấy PackageBlock trong resources.arsc!" -> return when (lang) {
+                AppLanguage.EN -> "PackageBlock not found in resources.arsc!"
+                AppLanguage.ZH -> "在 resources.arsc 中未找到 PackageBlock！"
+                AppLanguage.ES -> "¡No se encontró PackageBlock en resources.arsc!"
+                AppLanguage.HI -> "resources.arsc में PackageBlock नहीं मिला!"
+                AppLanguage.AR -> "لم يتم العثور على PackageBlock في resources.arsc!"
+                AppLanguage.PT -> "PackageBlock não encontrado em resources.arsc!"
+                AppLanguage.RU -> "Не найден PackageBlock в resources.arsc!"
+                AppLanguage.JA -> "resources.arsc 内に PackageBlock が見つかりません！"
+                AppLanguage.DE -> "PackageBlock in resources.arsc nicht gefunden!"
+                AppLanguage.FR -> "PackageBlock introuvable dans resources.arsc !"
+                else -> raw
+            }
+            "Dung lượng giải nén vượt quá giới hạn an toàn (4 GB)!" -> return when (lang) {
+                AppLanguage.EN -> "Extracted size exceeds the safe limit (4 GB)!"
+                AppLanguage.ZH -> "解压体积超过安全上限 (4 GB)！"
+                AppLanguage.ES -> "¡El tamaño extraído supera el límite seguro (4 GB)!"
+                AppLanguage.HI -> "निकाला गया आकार सुरक्षित सीमा (4 GB) से अधिक है!"
+                AppLanguage.AR -> "حجم الملفات المستخرجة يتجاوز الحد الآمن (4 GB)!"
+                AppLanguage.PT -> "O tamanho extraído excede o limite de segurança (4 GB)!"
+                AppLanguage.RU -> "Размер распакованных данных превышает безопасный лимит (4 ГБ)!"
+                AppLanguage.JA -> "展開サイズが安全上限 (4 GB) を超えています！"
+                AppLanguage.DE -> "Entpackte Größe überschreitet das Sicherheitslimit (4 GB)!"
+                AppLanguage.FR -> "La taille extraite dépasse la limite de sécurité (4 Go) !"
+                else -> raw
+            }
+            "Quá thời gian chờ (Timeout)" -> return when (lang) {
+                AppLanguage.EN -> "Timed out (Timeout)"
+                AppLanguage.ZH -> "等待超时 (Timeout)"
+                AppLanguage.ES -> "Tiempo de espera agotado (Timeout)"
+                AppLanguage.HI -> "समय समाप्त (Timeout)"
+                AppLanguage.AR -> "انتهت مهلة الانتظار (Timeout)"
+                AppLanguage.PT -> "Tempo limite esgotado (Timeout)"
+                AppLanguage.RU -> "Превышено время ожидания (Timeout)"
+                AppLanguage.JA -> "タイムアウト (Timeout)"
+                AppLanguage.DE -> "Zeitüberschreitung (Timeout)"
+                AppLanguage.FR -> "Délai d'attente dépassé (Timeout)"
+                else -> raw
+            }
+            "Không thể mở hộp thoại xác nhận cài đặt" -> return when (lang) {
+                AppLanguage.EN -> "Unable to open the installation confirmation dialog"
+                AppLanguage.ZH -> "无法打开安装确认对话框"
+                AppLanguage.ES -> "No se pudo abrir el diálogo de confirmación de instalación"
+                AppLanguage.HI -> "इंस्टॉलेशन पुष्टि संवाद नहीं खोला जा सका"
+                AppLanguage.AR -> "تعذر فتح نافذة تأكيد التثبيت"
+                AppLanguage.PT -> "Não foi possível abrir a caixa de diálogo de confirmação de instalação"
+                AppLanguage.RU -> "Не удалось открыть диалог подтверждения установки"
+                AppLanguage.JA -> "インストール確認ダイアログを開けませんでした"
+                AppLanguage.DE -> "Installationsbestätigungsdialog konnte nicht geöffnet werden"
+                AppLanguage.FR -> "Impossible d'ouvrir la boîte de dialogue de confirmation d'installation"
+                else -> raw
+            }
+            "Lỗi không xác định khi patch APK" -> return when (lang) {
+                AppLanguage.EN -> "Unknown error while patching APK"
+                AppLanguage.ZH -> "修补 APK 时发生未知错误"
+                AppLanguage.ES -> "Error desconocido al parchear APK"
+                AppLanguage.HI -> "APK पैच करते समय अज्ञात त्रुटि"
+                AppLanguage.AR -> "خطأ غير معروف أثناء تعديل APK"
+                AppLanguage.PT -> "Erro desconhecido ao aplicar patch no APK"
+                AppLanguage.RU -> "Неизвестная ошибка при патче APK"
+                AppLanguage.JA -> "APK パッチ中に不明なエラーが発生しました"
+                AppLanguage.DE -> "Unbekannter Fehler beim Patchen der APK"
+                AppLanguage.FR -> "Erreur inconnue lors du patch de l'APK"
+                else -> raw
+            }
+        }
+
+        REGEX_WARN_PREFIX.matchEntire(raw)?.let { m ->
+            val inner = translateNested(m.groupValues[1], strings, depth)
+            return when (lang) {
+                AppLanguage.EN -> "[Warning] $inner"
+                AppLanguage.VI -> "[Cảnh báo] $inner"
+                AppLanguage.ZH -> "[警告] $inner"
+                AppLanguage.ES -> "[Advertencia] $inner"
+                AppLanguage.HI -> "[चेतावनी] $inner"
+                AppLanguage.AR -> "[تحذير] $inner"
+                AppLanguage.PT -> "[Aviso] $inner"
+                AppLanguage.RU -> "[Предупреждение] $inner"
+                AppLanguage.JA -> "[警告] $inner"
+                AppLanguage.DE -> "[Warnung] $inner"
+                AppLanguage.FR -> "[Avertissement] $inner"
+            }
+        }
+
+        REGEX_INVALID_ORIG_PKG.matchEntire(raw)?.let { m ->
+            val pkg = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Invalid original APK package name: '$pkg'"
+                AppLanguage.ZH -> "原始 APK 包名无效: '$pkg'"
+                AppLanguage.ES -> "Nombre de paquete del APK original no válido: '$pkg'"
+                AppLanguage.HI -> "मूल APK पैकेज नाम अमान्य है: '$pkg'"
+                AppLanguage.AR -> "اسم حزمة APK الأصلي غير صالح: '$pkg'"
+                AppLanguage.PT -> "Nome de pacote do APK original inválido: '$pkg'"
+                AppLanguage.RU -> "Недопустимое имя пакета исходного APK: '$pkg'"
+                AppLanguage.JA -> "元の APK パッケージ名が無効です: '$pkg'"
+                AppLanguage.DE -> "Ungültiger Paketname der Original-APK: '$pkg'"
+                AppLanguage.FR -> "Nom de package de l'APK original invalide : '$pkg'"
+                else -> raw
+            }
+        }
+
+        REGEX_INVALID_CUSTOM_PKG.matchEntire(raw)?.let { m ->
+            val pkg = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Invalid Package Name: '$pkg'. Valid format example: com.example.app"
+                AppLanguage.ZH -> "包名 (Package Name) 无效: '$pkg'。正确格式示例: com.example.app"
+                AppLanguage.ES -> "Nombre de paquete (Package Name) no válido: '$pkg'. Ejemplo válido: com.example.app"
+                AppLanguage.HI -> "पैकेज नाम (Package Name) अमान्य है: '$pkg'। सही प्रारूप उदाहरण: com.example.app"
+                AppLanguage.AR -> "اسم الحزمة (Package Name) غير صالح: '$pkg'. مثال للتنسيق الصحيح: com.example.app"
+                AppLanguage.PT -> "Nome do Pacote (Package Name) inválido: '$pkg'. Exemplo válido: com.example.app"
+                AppLanguage.RU -> "Недопустимое имя пакета (Package Name): '$pkg'. Пример верного формата: com.example.app"
+                AppLanguage.JA -> "パッケージ名 (Package Name) が無効です: '$pkg'。正しい形式の例: com.example.app"
+                AppLanguage.DE -> "Ungültiger Paketname (Package Name): '$pkg'. Beispiel für gültiges Format: com.example.app"
+                AppLanguage.FR -> "Nom du package (Package Name) invalide : '$pkg'. Exemple valide : com.example.app"
+                else -> raw
+            }
+        }
+
+        REGEX_INVALID_TARGET_PKG.matchEntire(raw)?.let { m ->
+            val pkg = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Invalid target Package Name: '$pkg'"
+                AppLanguage.ZH -> "目标包名 (Package Name) 无效: '$pkg'"
+                AppLanguage.ES -> "Nombre de paquete de destino no válido: '$pkg'"
+                AppLanguage.HI -> "लक्ष्य पैकेज नाम अमान्य है: '$pkg'"
+                AppLanguage.AR -> "اسم الحزمة المستهدفة غير صالح: '$pkg'"
+                AppLanguage.PT -> "Nome do pacote de destino inválido: '$pkg'"
+                AppLanguage.RU -> "Недопустимое целевое имя пакета: '$pkg'"
+                AppLanguage.JA -> "出力先パッケージ名が無効です: '$pkg'"
+                AppLanguage.DE -> "Ungültiger Ziel-Paketname: '$pkg'"
+                AppLanguage.FR -> "Nom du package cible invalide : '$pkg'"
+                else -> raw
+            }
+        }
+
+        REGEX_INVALID_INSTALL_PKG.matchEntire(raw)?.let { m ->
+            val pkg = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Invalid installation package name: '$pkg'"
+                AppLanguage.ZH -> "安装包名无效: '$pkg'"
+                AppLanguage.ES -> "Nombre de paquete de instalación no válido: '$pkg'"
+                AppLanguage.HI -> "इंस्टॉलेशन पैकेज नाम अमान्य है: '$pkg'"
+                AppLanguage.AR -> "اسم حزمة التثبيت غير صالح: '$pkg'"
+                AppLanguage.PT -> "Nome do pacote de instalação inválido: '$pkg'"
+                AppLanguage.RU -> "Недопустимое имя устанавливаемого пакета: '$pkg'"
+                AppLanguage.JA -> "インストール対象のパッケージ名が無効です: '$pkg'"
+                AppLanguage.DE -> "Ungültiger Installations-Paketname: '$pkg'"
+                AppLanguage.FR -> "Nom du package d'installation invalide : '$pkg'"
+                else -> raw
+            }
+        }
+
+        REGEX_BUNDLE_TOO_MANY_ENTRIES.matchEntire(raw)?.let { m ->
+            val count = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Bundle contains too many entries ($count), aborting extraction for safety."
+                AppLanguage.ZH -> "安装包集合包含过多条目 ($count)，已中止解压以防卡死。"
+                AppLanguage.ES -> "El paquete Bundle contiene demasiados elementos ($count), extracción cancelada."
+                AppLanguage.HI -> "बंडल पैकेज में बहुत अधिक प्रविष्टियाँ ($count) हैं, सुरक्षा हेतु निष्कर्षण रोका गया।"
+                AppLanguage.AR -> "تحتوي الحزمة على عناصر كثيرة جداً ($count)، تم إلغاء الاستخراج للأمان."
+                AppLanguage.PT -> "O pacote Bundle contém muitos itens ($count), extração cancelada por segurança."
+                AppLanguage.RU -> "Бандл содержит слишком много элементов ($count), распаковка прервана."
+                AppLanguage.JA -> "バンドル内のエントリ数が多すぎます ($count)。フリーズ防止のため展開を中止しました。"
+                AppLanguage.DE -> "Das Bundle enthält zu viele Einträge ($count), Entpacken sicherheitshalber abgebrochen."
+                AppLanguage.FR -> "Le bundle contient trop d'entrées ($count), extraction annulée par sécurité."
+                else -> raw
+            }
+        }
+
+        REGEX_UNSAFE_EXTRACT_PATH.matchEntire(raw)?.let { m ->
+            val name = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Detected unsafe extraction path: $name"
+                AppLanguage.ZH -> "检测到不安全的解压路径: $name"
+                AppLanguage.ES -> "Se detectó una ruta de extracción no segura: $name"
+                AppLanguage.HI -> "असुरक्षित निष्कर्षण पथ का पता चला: $name"
+                AppLanguage.AR -> "تم اكتشاف مسار استخراج غير آمن: $name"
+                AppLanguage.PT -> "Caminho de extração inseguro detectado: $name"
+                AppLanguage.RU -> "Обнаружен небезопасный путь распаковки: $name"
+                AppLanguage.JA -> "安全でない展開パスを検出しました: $name"
+                AppLanguage.DE -> "Unsicherer Entpackpfad erkannt: $name"
+                AppLanguage.FR -> "Chemin d'extraction non sécurisé détecté : $name"
+                else -> raw
+            }
+        }
+
+        REGEX_NO_APK_IN_BUNDLE.matchEntire(raw)?.let { m ->
+            val bundleName = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "No .apk files found inside $bundleName"
+                AppLanguage.ZH -> "在 $bundleName 内未找到任何 .apk 文件"
+                AppLanguage.ES -> "No se encontraron archivos .apk dentro de $bundleName"
+                AppLanguage.HI -> "$bundleName के अंदर कोई .apk फ़ाइल नहीं मिली"
+                AppLanguage.AR -> "لم يتم العثور على أي ملف .apk داخل $bundleName"
+                AppLanguage.PT -> "Nenhum arquivo .apk encontrado dentro de $bundleName"
+                AppLanguage.RU -> "Внутри $bundleName не найдено файлов .apk"
+                AppLanguage.JA -> "$bundleName 内に .apk ファイルが見つかりません"
+                AppLanguage.DE -> "Keine .apk-Dateien in $bundleName gefunden"
+                AppLanguage.FR -> "Aucun fichier .apk trouvé dans $bundleName"
+                else -> raw
+            }
+        }
+
+        REGEX_ROOT_INSTALL_TIMEOUT.matchEntire(raw)?.let { m ->
+            val sec = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Timed out (${sec}s) while running pm install via Root."
+                AppLanguage.ZH -> "通过 Root 运行 pm install 超时 (${sec}s)。"
+                AppLanguage.ES -> "Tiempo de espera agotado (${sec}s) al ejecutar pm install vía Root."
+                AppLanguage.HI -> "Root के माध्यम से pm install चलाते समय समय समाप्त (${sec}s)।"
+                AppLanguage.AR -> "انتهت مهلة الانتظار (${sec} ثانية) أثناء تشغيل pm install عبر الروت."
+                AppLanguage.PT -> "Tempo esgotado (${sec}s) ao executar pm install via Root."
+                AppLanguage.RU -> "Превышено время ожидания (${sec} с) при выполнении pm install через Root."
+                AppLanguage.JA -> "Root で pm install 実行中にタイムアウトしました (${sec}秒)。"
+                AppLanguage.DE -> "Zeitüberschreitung (${sec}s) beim Ausführen von pm install über Root."
+                AppLanguage.FR -> "Délai dépassé (${sec}s) lors de l'exécution de pm install via Root."
+                else -> raw
+            }
+        }
+
+        REGEX_SHIZUKU_INSTALL_TIMEOUT.matchEntire(raw)?.let { m ->
+            val sec = m.groupValues[1]
+            return when (lang) {
+                AppLanguage.EN -> "Timed out (${sec}s) while installing via Shizuku. Please check for any install confirmation prompt on screen or restart Shizuku."
+                AppLanguage.ZH -> "通过 Shizuku 安装超时 (${sec}s)。请检查屏幕上是否有安装确认提示，或重启 Shizuku。"
+                AppLanguage.ES -> "Tiempo agotado (${sec}s) al instalar vía Shizuku. Revise si hay un aviso de confirmación o reinicie Shizuku."
+                AppLanguage.HI -> "Shizuku द्वारा इंस्टॉल करते समय समय समाप्त (${sec}s)। कृपया इंस्टॉल पुष्टि अधिसूचना जांचें या Shizuku रीस्टार्ट करें।"
+                AppLanguage.AR -> "انتهت مهلة التثبيت عبر Shizuku (${sec} ثانية). يرجى التحقق من إشعار تأكيد التثبيت أو إعادة تشغيل Shizuku."
+                AppLanguage.PT -> "Tempo esgotado (${sec}s) ao instalar via Shizuku. Verifique se há aviso de confirmação ou reinicie o Shizuku."
+                AppLanguage.RU -> "Тайм-аут (${sec} с) при установке через Shizuku. Проверьте запрос подтверждения установки или перезапустите Shizuku."
+                AppLanguage.JA -> "Shizuku での導入がタイムアウトしました (${sec}秒)。確認通知を確認するか Shizuku を再起動してください。"
+                AppLanguage.DE -> "Zeitüberschreitung (${sec}s) bei Installation über Shizuku. Bitte Installationsbestätigung prüfen oder Shizuku neu starten."
+                AppLanguage.FR -> "Délai dépassé (${sec}s) lors de l'installation via Shizuku. Vérifiez la notification de confirmation ou redémarrez Shizuku."
+                else -> raw
+            }
         }
 
         REGEX_PAT_0.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Shizuku] Permission request error: $err"
                 AppLanguage.ZH -> "[Shizuku] 权限请求错误: $err"
@@ -2034,7 +2469,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_6.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Storage] Warning while saving to Download/AAMaKer: $err"
                 AppLanguage.ZH -> "[存储] 保存到 Download/AAMaKer 时出现警告: $err"
@@ -2175,7 +2610,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_14.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Direct Install] Error preparing original APK: $err"
                 AppLanguage.ZH -> "[Direct Install] 准备原版 APK 出错: $err"
@@ -2192,7 +2627,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_15.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Failed to read original APK file: $err"
                 AppLanguage.ZH -> "读取原版 APK 文件失败: $err"
@@ -2548,16 +2983,16 @@ object AppTranslations {
             val meta = m.groupValues[1]
             val resId = m.groupValues[2]
             return when (lang) {
-                AppLanguage.EN -> "[Patcher] APK already declares '$meta' ($resId)."
-                AppLanguage.ZH -> "[Patcher] APK 已包含 '$meta' 声明 ($resId)。"
-                AppLanguage.ES -> "[Patcher] El APK ya tiene declarado '$meta' ($resId)."
-                AppLanguage.HI -> "[Patcher] APK में पहले से '$meta' ($resId) घोषित है।"
-                AppLanguage.AR -> "[Patcher] ملف APK يحتوي مسبقاً على التصريح '$meta' ($resId)."
-                AppLanguage.PT -> "[Patcher] O APK já possui a declaração '$meta' ($resId)."
-                AppLanguage.RU -> "[Patcher] APK уже содержит объявление '$meta' ($resId)."
-                AppLanguage.JA -> "[Patcher] APK には既に '$meta' ($resId) が定義されています。"
-                AppLanguage.DE -> "[Patcher] APK enthält bereits Deklaration '$meta' ($resId)."
-                AppLanguage.FR -> "[Patcher] L'APK déclare déjà '$meta' ($resId)."
+                AppLanguage.EN -> "[Patcher] APK already declares '$meta' (@0x$resId)."
+                AppLanguage.ZH -> "[Patcher] APK 已包含 '$meta' 声明 (@0x$resId)。"
+                AppLanguage.ES -> "[Patcher] El APK ya tiene declarado '$meta' (@0x$resId)."
+                AppLanguage.HI -> "[Patcher] APK में पहले से '$meta' (@0x$resId) घोषित है।"
+                AppLanguage.AR -> "[Patcher] ملف APK يحتوي مسبقاً على التصريح '$meta' (@0x$resId)."
+                AppLanguage.PT -> "[Patcher] O APK já possui a declaração '$meta' (@0x$resId)."
+                AppLanguage.RU -> "[Patcher] APK уже содержит объявление '$meta' (@0x$resId)."
+                AppLanguage.JA -> "[Patcher] APK には既に '$meta' (@0x$resId) が定義されています。"
+                AppLanguage.DE -> "[Patcher] APK enthält bereits Deklaration '$meta' (@0x$resId)."
+                AppLanguage.FR -> "[Patcher] L'APK déclare déjà '$meta' (@0x$resId)."
                 else -> raw
             }
         }
@@ -2649,19 +3084,62 @@ object AppTranslations {
         }
 
         REGEX_PAT_33.matchEntire(raw)?.let { m ->
-            val dexName = m.groupValues[1]
-            val sizeInfo = m.groupValues[2]
+            val kind = m.groupValues[1]
+            val dexName = m.groupValues[2]
+            val sizeVal = m.groupValues[3]
+            val unitRaw = m.groupValues[4]
+            val isBootstrapBytes = kind.contains("Bootstrap") || unitRaw.startsWith("bytes")
             return when (lang) {
-                AppLanguage.EN -> "[Patcher] + Injected DEX as '$dexName' ($sizeInfo)."
-                AppLanguage.ZH -> "[Patcher] + 已注入 DEX 为 '$dexName' ($sizeInfo)。"
-                AppLanguage.ES -> "[Patcher] + DEX inyectado como '$dexName' ($sizeInfo)."
-                AppLanguage.HI -> "[Patcher] + DEX को '$dexName' ($sizeInfo) के रूप में इंजेक्ट किया गया।"
-                AppLanguage.AR -> "[Patcher] + تم حقن DEX باسم '$dexName' ($sizeInfo)."
-                AppLanguage.PT -> "[Patcher] + DEX injetado como '$dexName' ($sizeInfo)."
-                AppLanguage.RU -> "[Patcher] + Внедрен DEX как '$dexName' ($sizeInfo)."
-                AppLanguage.JA -> "[Patcher] + DEX を '$dexName' ($sizeInfo) として注入しました。"
-                AppLanguage.DE -> "[Patcher] + DEX als '$dexName' ($sizeInfo) injiziert."
-                AppLanguage.FR -> "[Patcher] + DEX injecté sous '$dexName' ($sizeInfo)."
+                AppLanguage.EN -> if (isBootstrapBytes) {
+                    "[Patcher] + Injected isolated Bootstrap Service DEX as '$dexName' ($sizeVal bytes — no AndroidX/Kotlin/Guava conflict)."
+                } else {
+                    "[Patcher] + Injected DEX as '$dexName' ($sizeVal KB)."
+                }
+                AppLanguage.ZH -> if (isBootstrapBytes) {
+                    "[Patcher] + 已注入隔离的 Bootstrap Service DEX 为 '$dexName' ($sizeVal 字节 — 无 AndroidX/Kotlin/Guava 冲突)。"
+                } else {
+                    "[Patcher] + 已注入 DEX 为 '$dexName' ($sizeVal KB)。"
+                }
+                AppLanguage.ES -> if (isBootstrapBytes) {
+                    "[Patcher] + Inyectado Bootstrap Service DEX aislado como '$dexName' ($sizeVal bytes — sin conflictos AndroidX/Kotlin/Guava)."
+                } else {
+                    "[Patcher] + DEX inyectado como '$dexName' ($sizeVal KB)."
+                }
+                AppLanguage.HI -> if (isBootstrapBytes) {
+                    "[Patcher] + पृथक Bootstrap Service DEX को '$dexName' के रूप में इंजेक्ट किया गया ($sizeVal बाइट्स — कोई AndroidX/Kotlin/Guava टकराव नहीं)।"
+                } else {
+                    "[Patcher] + DEX को '$dexName' ($sizeVal KB) के रूप में इंजेक्ट किया गया।"
+                }
+                AppLanguage.AR -> if (isBootstrapBytes) {
+                    "[Patcher] + تم حقن Bootstrap Service DEX المعزول باسم '$dexName' ($sizeVal بايت — بدون تعارض AndroidX/Kotlin/Guava)."
+                } else {
+                    "[Patcher] + تم حقن DEX باسم '$dexName' ($sizeVal KB)."
+                }
+                AppLanguage.PT -> if (isBootstrapBytes) {
+                    "[Patcher] + Bootstrap Service DEX isolado injetado como '$dexName' ($sizeVal bytes — sem conflito AndroidX/Kotlin/Guava)."
+                } else {
+                    "[Patcher] + DEX injetado como '$dexName' ($sizeVal KB)."
+                }
+                AppLanguage.RU -> if (isBootstrapBytes) {
+                    "[Patcher] + Внедрен изолированный Bootstrap Service DEX как '$dexName' ($sizeVal байт — без конфликтов AndroidX/Kotlin/Guava)."
+                } else {
+                    "[Patcher] + Внедрен DEX как '$dexName' ($sizeVal KB)."
+                }
+                AppLanguage.JA -> if (isBootstrapBytes) {
+                    "[Patcher] + 分離された Bootstrap Service DEX を '$dexName' として注入しました ($sizeVal bytes — AndroidX/Kotlin/Guava 競合なし)。"
+                } else {
+                    "[Patcher] + DEX を '$dexName' ($sizeVal KB) として注入しました。"
+                }
+                AppLanguage.DE -> if (isBootstrapBytes) {
+                    "[Patcher] + Isolierte Bootstrap Service DEX als '$dexName' injiziert ($sizeVal Bytes — kein AndroidX/Kotlin/Guava-Konflikt)."
+                } else {
+                    "[Patcher] + DEX als '$dexName' ($sizeVal KB) injiziert."
+                }
+                AppLanguage.FR -> if (isBootstrapBytes) {
+                    "[Patcher] + Bootstrap Service DEX isolé injecté sous '$dexName' ($sizeVal octets — sans conflit AndroidX/Kotlin/Guava)."
+                } else {
+                    "[Patcher] + DEX injecté sous '$dexName' ($sizeVal KB)."
+                }
                 else -> raw
             }
         }
@@ -2684,7 +3162,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_34.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Patcher] Warning while injecting DEX: $err"
                 AppLanguage.ZH -> "[Patcher] 注入 DEX 时出现警告: $err"
@@ -2770,7 +3248,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_37.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Failed to copy APK to /data/local/tmp: $err"
                 AppLanguage.ZH -> "无法将 APK 复制到 /data/local/tmp: $err"
@@ -2787,7 +3265,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_38.matchEntire(raw)?.let { m ->
-            val out = m.groupValues[1]
+            val out = translateEmbeddedFragments(m.groupValues[1], lang)
             return when (lang) {
                 AppLanguage.EN -> "[Root] pm install result: $out"
                 AppLanguage.ZH -> "[Root] pm install 结果: $out"
@@ -2804,7 +3282,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_39.matchEntire(raw)?.let { m ->
-            val out = m.groupValues[1]
+            val out = translateEmbeddedFragments(m.groupValues[1], lang)
             return when (lang) {
                 AppLanguage.EN -> "Root pm install failed: $out"
                 AppLanguage.ZH -> "Root pm install 失败: $out"
@@ -2838,7 +3316,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_41.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Root] Exception: $err"
                 AppLanguage.ZH -> "[Root] 异常: $err"
@@ -2855,7 +3333,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_42.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Root installation error: $err"
                 AppLanguage.ZH -> "Root 安装错误: $err"
@@ -2889,7 +3367,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_44.matchEntire(raw)?.let { m ->
-            val res = m.groupValues[1]
+            val res = translateEmbeddedFragments(m.groupValues[1], lang)
             return when (lang) {
                 AppLanguage.EN -> "[Shizuku] Result: $res"
                 AppLanguage.ZH -> "[Shizuku] 结果: $res"
@@ -2906,7 +3384,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_45.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Shizuku installation failed: $err"
                 AppLanguage.ZH -> "通过 Shizuku 安装失败: $err"
@@ -2923,7 +3401,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_46.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Shizuku] Exception: $err"
                 AppLanguage.ZH -> "[Shizuku] 异常: $err"
@@ -2940,7 +3418,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_47.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Shizuku execution error: $err"
                 AppLanguage.ZH -> "Shizuku 执行错误: $err"
@@ -2992,7 +3470,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_50.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "[Non-Root Session] Error: $err"
                 AppLanguage.ZH -> "[Non-Root Session] 错误: $err"
@@ -3009,7 +3487,7 @@ object AppTranslations {
         }
 
         REGEX_PAT_51.matchEntire(raw)?.let { m ->
-            val err = m.groupValues[1]
+            val err = translateNested(m.groupValues[1], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Session API installation error: $err"
                 AppLanguage.ZH -> "Session API 安装错误: $err"
@@ -3044,7 +3522,7 @@ object AppTranslations {
 
         REGEX_PAT_53.matchEntire(raw)?.let { m ->
             val code = m.groupValues[1]
-            val msg = m.groupValues[2]
+            val msg = translateNested(m.groupValues[2], strings, depth)
             return when (lang) {
                 AppLanguage.EN -> "Installation failed (Code $code): $msg"
                 AppLanguage.ZH -> "安装失败 (代码 $code): $msg"
@@ -3081,77 +3559,7 @@ object AppTranslations {
             val hasPrefix = m.groupValues[1].isNotEmpty()
             val cls = m.groupValues[2]
             val innerMsg = m.groupValues[3]
-            val translatedInner = when {
-                innerMsg == "APK không chứa AndroidManifest.xml hợp lệ!" -> when (lang) {
-                    AppLanguage.EN -> "APK does not contain a valid AndroidManifest.xml!"
-                    AppLanguage.ZH -> "APK 不包含有效的 AndroidManifest.xml！"
-                    AppLanguage.ES -> "¡El APK no contiene un AndroidManifest.xml válido!"
-                    AppLanguage.HI -> "APK में मान्य AndroidManifest.xml नहीं है!"
-                    AppLanguage.AR -> "لا يحتوي ملف APK على AndroidManifest.xml صالح!"
-                    AppLanguage.PT -> "O APK não contém um AndroidManifest.xml válido!"
-                    AppLanguage.RU -> "APK не содержит корректного AndroidManifest.xml!"
-                    AppLanguage.JA -> "APK に有効な AndroidManifest.xml が含まれていません！"
-                    AppLanguage.DE -> "APK enthält keine gültige AndroidManifest.xml!"
-                    AppLanguage.FR -> "L'APK ne contient pas de fichier AndroidManifest.xml valide !"
-                    else -> innerMsg
-                }
-                innerMsg == "AndroidManifest.xml thiếu thẻ gốc <manifest>!" -> when (lang) {
-                    AppLanguage.EN -> "AndroidManifest.xml is missing the root <manifest> tag!"
-                    AppLanguage.ZH -> "AndroidManifest.xml 缺少根标签 <manifest>！"
-                    AppLanguage.ES -> "¡Falta la etiqueta raíz <manifest> en AndroidManifest.xml!"
-                    AppLanguage.HI -> "AndroidManifest.xml में मूल <manifest> टैग गायब है!"
-                    AppLanguage.AR -> "ملف AndroidManifest.xml يفتقد الوسم الجذري <manifest>!"
-                    AppLanguage.PT -> "AndroidManifest.xml não possui a tag raiz <manifest>!"
-                    AppLanguage.RU -> "В AndroidManifest.xml отсутствует корневой тег <manifest>!"
-                    AppLanguage.JA -> "AndroidManifest.xml にルート <manifest> タグがありません！"
-                    AppLanguage.DE -> "In AndroidManifest.xml fehlt das Wurzel-Tag <manifest>!"
-                    AppLanguage.FR -> "La balise racine <manifest> est manquante dans AndroidManifest.xml !"
-                    else -> innerMsg
-                }
-                innerMsg == "Không tìm thấy PackageBlock trong resources.arsc!" -> when (lang) {
-                    AppLanguage.EN -> "PackageBlock not found in resources.arsc!"
-                    AppLanguage.ZH -> "在 resources.arsc 中未找到 PackageBlock！"
-                    AppLanguage.ES -> "¡No se encontró PackageBlock en resources.arsc!"
-                    AppLanguage.HI -> "resources.arsc में PackageBlock नहीं मिला!"
-                    AppLanguage.AR -> "لم يتم العثور على PackageBlock في resources.arsc!"
-                    AppLanguage.PT -> "PackageBlock não encontrado em resources.arsc!"
-                    AppLanguage.RU -> "Не найден PackageBlock в resources.arsc!"
-                    AppLanguage.JA -> "resources.arsc 内に PackageBlock が見つかりません！"
-                    AppLanguage.DE -> "PackageBlock in resources.arsc nicht gefunden!"
-                    AppLanguage.FR -> "PackageBlock introuvable dans resources.arsc !"
-                    else -> innerMsg
-                }
-                innerMsg == "Danh sách file APK đầu vào trống!" -> when (lang) {
-                    AppLanguage.EN -> "Input APK file list is empty!"
-                    AppLanguage.ZH -> "输入 APK 文件列表为空！"
-                    AppLanguage.ES -> "¡La lista de archivos APK de entrada está vacía!"
-                    AppLanguage.HI -> "इनपुट APK फ़ाइल सूची खाली है!"
-                    AppLanguage.AR -> "قائمة ملفات APK المدخلة فارغة!"
-                    AppLanguage.PT -> "A lista de arquivos APK de entrada está vazia!"
-                    AppLanguage.RU -> "Список входных файлов APK пуст!"
-                    AppLanguage.JA -> "入力 APK ファイルリストが空です！"
-                    AppLanguage.DE -> "Eingabe-APK-Dateiliste ist leer!"
-                    AppLanguage.FR -> "La liste des fichiers APK d'entrée est vide !"
-                    else -> innerMsg
-                }
-                innerMsg.startsWith("Không tìm thấy file .apk nào bên trong ") -> {
-                    val bundleName = innerMsg.removePrefix("Không tìm thấy file .apk nào bên trong ")
-                    when (lang) {
-                        AppLanguage.EN -> "No .apk files found inside $bundleName"
-                        AppLanguage.ZH -> "在 $bundleName 内未找到任何 .apk 文件"
-                        AppLanguage.ES -> "No se encontraron archivos .apk dentro de $bundleName"
-                        AppLanguage.HI -> "$bundleName के अंदर कोई .apk फ़ाइल नहीं मिली"
-                        AppLanguage.AR -> "لم يتم العثور على أي ملف .apk داخل $bundleName"
-                        AppLanguage.PT -> "Nenhum arquivo .apk encontrado dentro de $bundleName"
-                        AppLanguage.RU -> "Внутри $bundleName не найдено файлов .apk"
-                        AppLanguage.JA -> "$bundleName 内に .apk ファイルが見つかりません"
-                        AppLanguage.DE -> "Keine .apk-Dateien in $bundleName gefunden"
-                        AppLanguage.FR -> "Aucun fichier .apk trouvé dans $bundleName"
-                        else -> innerMsg
-                    }
-                }
-                else -> innerMsg
-            }
+            val translatedInner = translateNested(innerMsg, strings, depth)
             if (hasPrefix) {
                 return when (lang) {
                     AppLanguage.EN -> "[CRITICAL ERROR] $cls: $translatedInner"

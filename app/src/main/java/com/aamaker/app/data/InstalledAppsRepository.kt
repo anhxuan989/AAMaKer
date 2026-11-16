@@ -25,8 +25,13 @@ data class TargetAppCandidate(
 
 class InstalledAppsRepository(private val context: Context) {
 
-    suspend fun loadInstalledApps(includeSystemApps: Boolean = false): List<TargetAppCandidate> =
+    suspend fun loadInstalledApps(
+        includeSystemApps: Boolean = false,
+        languageCode: String? = null
+    ): List<TargetAppCandidate> =
         withContext(Dispatchers.IO) {
+            val sortLocale = languageCode?.let { java.util.Locale.forLanguageTag(it) }
+                ?: java.util.Locale.getDefault()
             val pm = context.packageManager
             val flags = PackageManager.GET_META_DATA
             val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -88,7 +93,7 @@ class InstalledAppsRepository(private val context: Context) {
                 )
             }.sortedWith(
                 compareByDescending<TargetAppCandidate> { it.hasExistingCarMeta }
-                    .thenBy { it.appName.lowercase() }
+                    .thenBy { it.appName.lowercase(sortLocale) }
             )
         }
 
