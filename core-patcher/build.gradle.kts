@@ -57,8 +57,8 @@ val generateStubDex by tasks.registering {
             if (org.gradle.internal.os.OperatingSystem.current().isWindows) "d8.bat" else "d8"
         )
         val outDir = outputAssetsDir.get().asFile
-        outDir.deleteRecursively()
         outDir.mkdirs()
+        outDir.listFiles()?.filter { it.name.startsWith("aa_") }?.forEach { it.deleteRecursively() }
 
         val tempJarsDir = File(layout.buildDirectory.get().asFile, "tmp/stub_dex_jars").apply {
             deleteRecursively()
@@ -193,15 +193,46 @@ val generateStubDex by tasks.registering {
     }
 }
 
+val copyAnyAutoTemplate by tasks.registering {
+    dependsOn(":anyauto-runtime:packageDebug")
+    dependsOn(generateStubDex)
+    val anyAutoProject = project(":anyauto-runtime")
+    val outputAssetsDir = stubDexAssetsDir
+    inputs.files(provider {
+        listOf(
+            anyAutoProject.layout.buildDirectory.file("outputs/apk/debug/anyauto-runtime-debug.apk").get().asFile,
+            rootProject.file("app/debug/anyauto-runtime-debug.apk")
+        ).filter { it.exists() }
+    })
+    outputs.file(outputAssetsDir.map { it.file("anyauto_template.apk") })
+
+    doLast {
+        val candidates = listOf(
+            anyAutoProject.layout.buildDirectory.file("outputs/apk/debug/anyauto-runtime-debug.apk").get().asFile,
+            rootProject.file("app/debug/anyauto-runtime-debug.apk")
+        )
+        val apkFile = candidates.firstOrNull { it.exists() }
+            ?: throw GradleException(
+                "Không tìm thấy file APK mẫu AnyAuto runtime template. Đã tìm tại:\n" +
+                candidates.joinToString("\n") { " - ${it.absolutePath}" }
+            )
+        val outDir = outputAssetsDir.get().asFile
+        outDir.mkdirs()
+        val targetFile = File(outDir, "anyauto_template.apk")
+        apkFile.copyTo(targetFile, overwrite = true)
+    }
+}
+
 android.sourceSets.getByName("main").assets.srcDir(
-    generateStubDex.map { stubDexAssetsDir.get().asFile }
+    copyAnyAutoTemplate.map { stubDexAssetsDir.get().asFile }
 )
 
 tasks.matching {
     (it.name.startsWith("generate") && it.name.endsWith("Assets")) ||
+    (it.name.startsWith("package") && it.name.endsWith("Assets")) ||
     it.name.contains("Lint", ignoreCase = true)
 }.configureEach {
-    dependsOn(generateStubDex)
+    dependsOn(copyAnyAutoTemplate)
 }
 
 dependencies {

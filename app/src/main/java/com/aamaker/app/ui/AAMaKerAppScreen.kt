@@ -19,9 +19,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -115,6 +117,7 @@ import com.aamaker.core.installer.model.EnvironmentStatus
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.patcher.model.CarAppCategory
 import com.aamaker.core.patcher.model.PatchStrategy
+import com.aamaker.core.patcher.model.SplitRatioPreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -909,13 +912,17 @@ private fun ImportApkSection(
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
             ) {
                 FilledTonalButton(
                     onClick = onPickExternalFile,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
                     shape = MaterialTheme.shapes.medium,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.FolderOpen,
@@ -925,7 +932,9 @@ private fun ImportApkSection(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.chooseFileButton,
-                        maxLines = 2,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        softWrap = false,
                         textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -933,9 +942,11 @@ private fun ImportApkSection(
 
                 OutlinedButton(
                     onClick = onPickExternalFileDirectInstall,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
                     shape = MaterialTheme.shapes.medium,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
@@ -945,7 +956,9 @@ private fun ImportApkSection(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.chooseFileDirectInstallButton,
-                        maxLines = 2,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        softWrap = false,
                         textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -966,6 +979,7 @@ private fun PatchAndInstallTab(
     onPickExternalFileDirectInstall: () -> Unit
 ) {
     val candidate = state.selectedCandidate
+    var showSecondaryPickerDialog by rememberSaveable { mutableStateOf(false) }
     val saveApkLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")
     ) { targetUri ->
@@ -1019,6 +1033,118 @@ private fun PatchAndInstallTab(
             }
         }
         return
+    }
+
+    if (showSecondaryPickerDialog) {
+        var secSearch by rememberSaveable { mutableStateOf("") }
+        val secFiltered = remember(state.installedApps, secSearch, candidate.packageName) {
+            state.installedApps.filter { item ->
+                item.packageName != candidate.packageName && (
+                    secSearch.isBlank() ||
+                        item.appName.contains(secSearch, ignoreCase = true) ||
+                        item.packageName.contains(secSearch, ignoreCase = true)
+                    )
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showSecondaryPickerDialog = false },
+            title = {
+                Text(
+                    text = strings.dualSecondaryAppLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = secSearch,
+                        onValueChange = { secSearch = it },
+                        placeholder = { Text(strings.searchPlaceholder) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                    ) {
+                        item(key = "__dynamic_car_picker__") {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(MaterialTheme.shapes.small)
+                                    .clickable {
+                                        viewModel.selectSecondaryApp(null)
+                                        showSecondaryPickerDialog = false
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp)
+                            ) {
+                                RadioButton(
+                                    selected = state.secondaryPackageName.isBlank(),
+                                    onClick = null
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = strings.dualSecondaryChooseOnCarHint,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                            )
+                        }
+                        itemsIndexed(secFiltered, key = { _, app -> app.packageName }) { _, appItem ->
+                            val isSelected = state.secondaryPackageName == appItem.packageName
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(MaterialTheme.shapes.small)
+                                    .clickable {
+                                        viewModel.selectSecondaryApp(appItem)
+                                        showSecondaryPickerDialog = false
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = null
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                AppCandidateIcon(candidate = appItem, size = 34.dp, cornerRadius = 8.dp)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = appItem.appName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = appItem.packageName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSecondaryPickerDialog = false }) {
+                    Text(strings.closeButton)
+                }
+            }
+        )
     }
 
     Column(
@@ -1166,7 +1292,36 @@ private fun PatchAndInstallTab(
                         singleLine = true
                     )
 
-                    if (state.selectedStrategy != PatchStrategy.PARKED_APP_MODE) {
+                    if (state.selectedStrategy == PatchStrategy.ANYAUTO_SHIZUKU_MODE) {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DirectionsCar,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Text(
+                                    text = strings.anyAutoInfoBanner,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    } else if (state.selectedStrategy != PatchStrategy.PARKED_APP_MODE) {
                         Text(
                             text = strings.automotiveDescConfigLabel,
                             style = MaterialTheme.typography.labelMedium,
@@ -1207,73 +1362,186 @@ private fun PatchAndInstallTab(
                         }
                     }
 
-                    Text(
-                        text = strings.compatOptionsHeaderLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (state.selectedStrategy != PatchStrategy.ANYAUTO_SHIZUKU_MODE) {
+                        Text(
+                            text = strings.compatOptionsHeaderLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        FilterChip(
-                            selected = state.selectedStrategy == PatchStrategy.PARKED_APP_MODE || state.injectParkedGameManifest,
-                            enabled = state.selectedStrategy != PatchStrategy.PARKED_APP_MODE,
-                            onClick = {
-                                viewModel.updateCompatFlags(parkedGameManifest = !state.injectParkedGameManifest)
-                            },
-                            label = {
-                                Text(
-                                    text = strings.parkedGameManifestChip,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        )
-                        FilterChip(
-                            selected = state.bypassDrivingRestriction,
-                            onClick = {
-                                viewModel.updateCompatFlags(bypassDriving = !state.bypassDrivingRestriction)
-                            },
-                            label = {
-                                Text(
-                                    text = strings.bypassDrivingRestrictionChip,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        )
-                        FilterChip(
-                            selected = state.enableGamepadSupport,
-                            onClick = {
-                                viewModel.updateCompatFlags(gamepadSupport = !state.enableGamepadSupport)
-                            },
-                            label = {
-                                Text(
-                                    text = strings.gamepadSupportChip,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        )
-                        FilterChip(
-                            selected = state.unlockScreenOrientation,
-                            onClick = {
-                                viewModel.updateCompatFlags(unlockOrientation = !state.unlockScreenOrientation)
-                            },
-                            label = {
-                                Text(
-                                    text = strings.unlockOrientationChip,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            FilterChip(
+                                selected = state.selectedStrategy == PatchStrategy.PARKED_APP_MODE || state.injectParkedGameManifest,
+                                enabled = state.selectedStrategy != PatchStrategy.PARKED_APP_MODE,
+                                onClick = {
+                                    viewModel.updateCompatFlags(parkedGameManifest = !state.injectParkedGameManifest)
+                                },
+                                label = {
+                                    Text(
+                                        text = strings.parkedGameManifestChip,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            )
+                            FilterChip(
+                                selected = state.bypassDrivingRestriction,
+                                onClick = {
+                                    viewModel.updateCompatFlags(bypassDriving = !state.bypassDrivingRestriction)
+                                },
+                                label = {
+                                    Text(
+                                        text = strings.bypassDrivingRestrictionChip,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            )
+                            FilterChip(
+                                selected = state.enableGamepadSupport,
+                                onClick = {
+                                    viewModel.updateCompatFlags(gamepadSupport = !state.enableGamepadSupport)
+                                },
+                                label = {
+                                    Text(
+                                        text = strings.gamepadSupportChip,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            )
+                            FilterChip(
+                                selected = state.unlockScreenOrientation,
+                                onClick = {
+                                    viewModel.updateCompatFlags(unlockOrientation = !state.unlockScreenOrientation)
+                                },
+                                label = {
+                                    Text(
+                                        text = strings.unlockOrientationChip,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            )
+                        }
                     }
 
-                    if (state.selectedStrategy == PatchStrategy.UNIVERSAL_INJECTION) {
+                    if (state.selectedStrategy == PatchStrategy.UNIVERSAL_INJECTION ||
+                        state.selectedStrategy == PatchStrategy.DUAL_WINDOW_MODE
+                    ) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                        )
+
+                        Text(
+                            text = strings.dualWindowSectionTitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = strings.dualSecondaryAppLabel,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = if (state.secondaryPackageName.isNotBlank()) {
+                                                "${state.secondaryAppLabel.ifBlank { state.secondaryPackageName }} (${state.secondaryPackageName})"
+                                            } else {
+                                                strings.dualSecondaryChooseOnCarHint
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    FilledTonalButton(
+                                        onClick = { showSecondaryPickerDialog = true },
+                                        shape = MaterialTheme.shapes.small,
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(
+                                            text = strings.dualPickSecondaryButton,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
+                                    }
+                                }
+
+                                Text(
+                                    text = strings.dualSplitRatioLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    SplitRatioPreset.entries.forEach { preset ->
+                                        FilterChip(
+                                            selected = state.selectedSplitPreset == preset,
+                                            onClick = { viewModel.updateSplitPreset(preset) },
+                                            label = { Text(preset.displayLabel) }
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(MaterialTheme.shapes.small)
+                                        .clickable { viewModel.updateMixDualAudioFocus(!state.mixDualAudioFocus) }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = strings.dualMixAudioTitle,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = strings.dualMixAudioDesc,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Switch(
+                                        checked = state.mixDualAudioFocus,
+                                        onCheckedChange = viewModel::updateMixDualAudioFocus
+                                    )
+                                }
+                            }
+                        }
+
                         Text(
                             text = strings.carLauncherCategoryLabel,
                             style = MaterialTheme.typography.labelMedium,
@@ -1476,14 +1744,18 @@ private fun PatchAndInstallTab(
             if (!isDirectNoPatch) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
                 ) {
                     FilledTonalButton(
                         onClick = { viewModel.startPatchAndInstall(installImmediately = false) },
                         enabled = !state.isWorking,
                         shape = MaterialTheme.shapes.medium,
-                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 10.dp),
-                        modifier = Modifier.weight(1f)
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
                     ) {
                         Icon(
                             imageVector = Icons.Default.Save,
@@ -1493,7 +1765,9 @@ private fun PatchAndInstallTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.patchAndSaveButton,
-                            maxLines = 2,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false,
                             textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1503,8 +1777,10 @@ private fun PatchAndInstallTab(
                         onClick = viewModel::startDirectInstallOriginalApk,
                         enabled = !state.isWorking,
                         shape = MaterialTheme.shapes.medium,
-                        contentPadding = PaddingValues(vertical = 11.dp, horizontal = 10.dp),
-                        modifier = Modifier.weight(1f)
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
                     ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
@@ -1514,7 +1790,9 @@ private fun PatchAndInstallTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.directInstallNoPatchButton,
-                            maxLines = 2,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false,
                             textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1556,20 +1834,25 @@ private fun PatchAndInstallTab(
         if (state.lastPatchedApk != null && !state.isWorking) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Min)
             ) {
                 OutlinedButton(
                     onClick = viewModel::saveLastPatchedApkToDownloads,
                     shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                 ) {
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.saveToDownloadButton,
                         style = MaterialTheme.typography.labelMedium,
-                        maxLines = 2,
+                        maxLines = 1,
+                        softWrap = false,
                         textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1581,15 +1864,18 @@ private fun PatchAndInstallTab(
                         saveApkLauncher.launch("${pkg}_AA_Patched.apk")
                     },
                     shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = strings.chooseSaveFolderButton,
                         style = MaterialTheme.typography.labelMedium,
-                        maxLines = 2,
+                        maxLines = 1,
+                        softWrap = false,
                         textAlign = TextAlign.Center,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1797,7 +2083,9 @@ private fun EnvironmentDiagnosticTab(
 
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
                 ) {
                     Button(
                         onClick = {
@@ -1823,8 +2111,10 @@ private fun EnvironmentDiagnosticTab(
                             }
                         },
                         shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Settings,
@@ -1834,7 +2124,9 @@ private fun EnvironmentDiagnosticTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.openAASettingsButton,
-                            maxLines = 2,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false,
                             textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -1843,7 +2135,8 @@ private fun EnvironmentDiagnosticTab(
                     OutlinedButton(
                         onClick = onRefresh,
                         shape = MaterialTheme.shapes.medium,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+                        modifier = Modifier.fillMaxHeight(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -1853,7 +2146,9 @@ private fun EnvironmentDiagnosticTab(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.recheckButton,
-                            maxLines = 2,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            softWrap = false,
                             textAlign = TextAlign.Center,
                             overflow = TextOverflow.Ellipsis
                         )

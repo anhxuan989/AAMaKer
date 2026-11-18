@@ -1,11 +1,13 @@
 package com.aamaker.core.patcher
 
 import android.content.Context
+import com.aamaker.core.patcher.engine.AnyAutoCompanionEngine
 import com.aamaker.core.patcher.engine.ApkSignerEngine
 import com.aamaker.core.patcher.engine.ManifestAndArscPatcher
 import com.aamaker.core.patcher.engine.SplitApkMerger
 import com.aamaker.core.patcher.model.PatchConfig
 import com.aamaker.core.patcher.model.PatchResult
+import com.aamaker.core.patcher.model.PatchStrategy
 import com.aamaker.core.patcher.security.PackageNameValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,6 +17,7 @@ class AAMakerPatcherPipeline(private val context: Context) {
 
     private val splitMerger = SplitApkMerger()
     private val manifestPatcher = ManifestAndArscPatcher(context)
+    private val anyAutoEngine = AnyAutoCompanionEngine(context)
     private val apkSigner = ApkSignerEngine(context)
 
     suspend fun executePatch(
@@ -36,17 +39,26 @@ class AAMakerPatcherPipeline(private val context: Context) {
             onLog("Chế độ Patch: ${config.strategy.title}")
 
             val unsignedApk = File(workDir, "unsigned_patched.apk")
-            val outcome = splitMerger.prepareApkModule(
-                inputFiles = config.sourceApkFiles,
-                workDir = workDir,
-                onLog = onLog
-            ).use { session ->
-                manifestPatcher.patchApkModule(
-                    apkModule = session.apkModule,
-                    outputUnsignedApk = unsignedApk,
+            val outcome = if (config.strategy == PatchStrategy.ANYAUTO_SHIZUKU_MODE) {
+                anyAutoEngine.generateCompanionApk(
                     config = config,
+                    outputUnsignedApk = unsignedApk,
+                    workDir = workDir,
                     onLog = onLog
                 )
+            } else {
+                splitMerger.prepareApkModule(
+                    inputFiles = config.sourceApkFiles,
+                    workDir = workDir,
+                    onLog = onLog
+                ).use { session ->
+                    manifestPatcher.patchApkModule(
+                        apkModule = session.apkModule,
+                        outputUnsignedApk = unsignedApk,
+                        config = config,
+                        onLog = onLog
+                    )
+                }
             }
 
             val finalPkg = requestedPkg

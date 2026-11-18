@@ -58,6 +58,13 @@ class AppLocalizationTest {
                     add(s.strategyTitle(strategy))
                     add(s.strategyDescription(strategy))
                 }
+                add(s.dualWindowSectionTitle)
+                add(s.dualSecondaryAppLabel)
+                add(s.dualSecondaryChooseOnCarHint)
+                add(s.dualPickSecondaryButton)
+                add(s.dualSplitRatioLabel)
+                add(s.dualMixAudioTitle)
+                add(s.dualMixAudioDesc)
                 add(s.outputPackageLabel)
                 add(s.randomizeTooltip)
                 add(s.carDisplayNameLabel)
@@ -169,6 +176,7 @@ class AppLocalizationTest {
             "Ứng dụng gốc: YouTube (com.google.android.youtube)",
             "Chế độ Patch: ${PatchStrategy.PARKED_APP_MODE.title}",
             "Chế độ Patch: ${PatchStrategy.UNIVERSAL_INJECTION.title}",
+            "Chế độ Patch: ${PatchStrategy.DUAL_WINDOW_MODE.title}",
             "[Merger] Phát hiện gói Bundle (app_bundle.apks), đang giải nén các thành phần...",
             "[Merger] Phát hiện 4 Split APKs, đang hợp nhất cấu trúc nhị phân (DEX + resources.arsc + Native Libs + Assets)...",
             "[Merger] + Nạp APK nền (base): base.apk",

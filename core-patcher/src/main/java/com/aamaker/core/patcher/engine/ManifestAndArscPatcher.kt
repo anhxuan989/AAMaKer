@@ -106,6 +106,7 @@ class ManifestAndArscPatcher(
                     "androidx.car.app.ACCESS_SURFACE",
                     "android.permission.FOREGROUND_SERVICE",
                     "android.permission.WAKE_LOCK",
+                    "android.permission.DISABLE_KEYGUARD",
                     BridgeAuthManager.PERMISSION_COMMAND_BRIDGE
                 ),
                 onLog = onLog
@@ -143,7 +144,8 @@ class ManifestAndArscPatcher(
 
         var dexInjected = false
         when (config.strategy) {
-            PatchStrategy.UNIVERSAL_INJECTION -> {
+            PatchStrategy.UNIVERSAL_INJECTION,
+            PatchStrategy.DUAL_WINDOW_MODE -> {
                 injectCarAppServiceIntoManifest(rootManifest, config, onLog)
                 dexInjected = injectRuntimeStubDex(apkModule, onLog)
             }
@@ -486,6 +488,16 @@ class ManifestAndArscPatcher(
             val pkgElem = queriesElem.createChildElement("package")
             setAndroidStringAttr(pkgElem, "name", ATTR_NAME, "com.aamaker.app")
         }
+
+        val hasDualBridgeProviderQuery = queriesElem.getElements { it.name == "provider" }
+            .asSequence()
+            .any { it.searchAttributeByResourceId(ATTR_AUTHORITIES)?.valueAsString == "com.aamaker.app.dualbridge" }
+
+        if (!hasDualBridgeProviderQuery) {
+            val dualProvElem = queriesElem.createChildElement("provider")
+            setAndroidStringAttr(dualProvElem, "name", ATTR_NAME, "com.aamaker.app.input.AAMakerDualDisplayProvider")
+            setAndroidStringAttr(dualProvElem, "authorities", ATTR_AUTHORITIES, "com.aamaker.app.dualbridge")
+        }
     }
 
     private fun ensureMinCarApiLevelMeta(appElement: ResXmlElement) {
@@ -506,7 +518,9 @@ class ManifestAndArscPatcher(
         val doc = ResXmlDocument()
         val root = doc.getOrCreateElement("automotiveApp")
 
-        if (config.strategy == PatchStrategy.UNIVERSAL_INJECTION) {
+        if (config.strategy == PatchStrategy.UNIVERSAL_INJECTION ||
+            config.strategy == PatchStrategy.DUAL_WINDOW_MODE
+        ) {
             val usesTemplate = root.createChildElement("uses")
             usesTemplate.getOrCreateAttribute("name", 0).setValueAsString("template")
             if (config.injectMediaUses) {
@@ -619,6 +633,52 @@ class ManifestAndArscPatcher(
             val langMetaElem = appElement.createChildElement("meta-data")
             setAndroidStringAttr(langMetaElem, "name", ATTR_NAME, prefLangMetaName)
             setAndroidStringAttr(langMetaElem, "value", ATTR_VALUE, prefLang)
+        }
+
+        val dualMetaKeys = setOf(
+            "com.aamaker.DUAL_AUTO_START",
+            "com.aamaker.DUAL_SECONDARY_PKG",
+            "com.aamaker.DUAL_SPLIT_RATIO",
+            "com.aamaker.DUAL_MIX_AUDIO"
+        )
+        appElement.getElements { it.name == "meta-data" }
+            .asSequence()
+            .filter { it.searchAttributeByResourceId(ATTR_NAME)?.valueAsString in dualMetaKeys }
+            .toList()
+            .forEach { it.removeSelf() }
+
+        val shouldAutoStartDual = config.strategy == PatchStrategy.DUAL_WINDOW_MODE || config.autoStartDualWindow
+        val autoDualMeta = appElement.createChildElement("meta-data")
+        setAndroidStringAttr(autoDualMeta, "name", ATTR_NAME, "com.aamaker.DUAL_AUTO_START")
+        setAndroidBooleanAttr(autoDualMeta, "value", ATTR_VALUE, shouldAutoStartDual)
+
+        val secondaryPkg = config.secondaryPackageName?.trim().orEmpty()
+        if (secondaryPkg.isNotEmpty() && PackageNameValidator.isValidPackageName(secondaryPkg)) {
+            val secPkgMeta = appElement.createChildElement("meta-data")
+            setAndroidStringAttr(secPkgMeta, "name", ATTR_NAME, "com.aamaker.DUAL_SECONDARY_PKG")
+            setAndroidStringAttr(secPkgMeta, "value", ATTR_VALUE, secondaryPkg)
+            ensureSecondaryPackageQuery(rootManifest, secondaryPkg)
+        }
+
+        val clampedRatio = config.defaultSplitRatio.coerceIn(0.30f, 0.70f)
+        val ratioMeta = appElement.createChildElement("meta-data")
+        setAndroidStringAttr(ratioMeta, "name", ATTR_NAME, "com.aamaker.DUAL_SPLIT_RATIO")
+        setAndroidStringAttr(ratioMeta, "value", ATTR_VALUE, String.format(java.util.Locale.US, "%.2f", clampedRatio))
+
+        val mixAudioMeta = appElement.createChildElement("meta-data")
+        setAndroidStringAttr(mixAudioMeta, "name", ATTR_NAME, "com.aamaker.DUAL_MIX_AUDIO")
+        setAndroidBooleanAttr(mixAudioMeta, "value", ATTR_VALUE, config.mixDualAudioFocus)
+    }
+
+    private fun ensureSecondaryPackageQuery(rootManifest: ResXmlElement, secondaryPkg: String) {
+        val queriesElem = rootManifest.getElements { it.name == "queries" }.asSequence().firstOrNull()
+            ?: rootManifest.createChildElement("queries")
+        val exists = queriesElem.getElements { it.name == "package" }
+            .asSequence()
+            .any { it.searchAttributeByResourceId(ATTR_NAME)?.valueAsString == secondaryPkg }
+        if (!exists) {
+            val pkgElem = queriesElem.createChildElement("package")
+            setAndroidStringAttr(pkgElem, "name", ATTR_NAME, secondaryPkg)
         }
     }
 
@@ -796,8 +856,13 @@ class ManifestAndArscPatcher(
             setAndroidBooleanAttr(actElem, "allowEmbedded", ATTR_ALLOW_EMBEDDED, true)
 
             if (isUniversalProjection) {
+                // Set showWhenLocked directly in the binary AndroidManifest.xml so Android's
+                // ActivityTaskSupervisor / KeyguardController NEVER places the Activity into STOPPED state
+                // when the physical Power button is pressed, while removing turnScreenOn so the phone screen
+                // does not light back up by itself!
                 setAndroidBooleanAttr(actElem, "showOnLockScreen", ATTR_SHOW_ON_LOCK_SCREEN, true)
                 setAndroidBooleanAttr(actElem, "showWhenLocked", ATTR_SHOW_WHEN_LOCKED, true)
+                actElem.removeAttributesWithId(ATTR_TURN_SCREEN_ON)
             }
 
             if (unlockOrientation) {
@@ -971,6 +1036,7 @@ class ManifestAndArscPatcher(
         private const val ATTR_APP_CATEGORY = 0x01010545
         private const val ATTR_ISOLATED_SPLITS = 0x0101054b
         private const val ATTR_SHOW_WHEN_LOCKED = 0x01010569
+        private const val ATTR_TURN_SCREEN_ON = 0x0101056a
         private const val ATTR_APP_COMPONENT_FACTORY = 0x0101057a
         private const val ATTR_IS_SPLIT_REQUIRED = 0x01010591
         private const val ATTR_REQUIRED_SPLIT_TYPES = 0x0101064e

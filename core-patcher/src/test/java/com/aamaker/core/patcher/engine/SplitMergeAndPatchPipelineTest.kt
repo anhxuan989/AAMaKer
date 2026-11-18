@@ -332,6 +332,79 @@ class SplitMergeAndPatchPipelineTest {
         assertFalse(sanitized.contains("\\"))
     }
 
+    @Test
+    fun `dual window mode injects split screen metadata secondary package query and isolated runtime dex`() {
+        val workDir = tempFolder.newFolder("work_dual")
+        val generatedAssetsDir = File("build/generated/stub_dex_assets/main")
+
+        val baseApk = File(workDir, "base_dual.apk")
+        createBaseSplitApk(baseApk)
+
+        val patcher = ManifestAndArscPatcher(
+            context = null,
+            assetReader = { name ->
+                val f = File(generatedAssetsDir, name)
+                if (f.exists()) f.readBytes() else null
+            }
+        )
+
+        val unsignedApk = File(workDir, "dual_unsigned.apk")
+        val config = PatchConfig(
+            sourceApkFiles = listOf(baseApk),
+            originalPackageName = "com.stremio.one",
+            appName = "Stremio",
+            strategy = PatchStrategy.DUAL_WINDOW_MODE,
+            customPackageName = "com.stremio.one.dual101",
+            customAppName = "Stremio + Maps",
+            secondaryPackageName = "com.google.android.apps.maps",
+            defaultSplitRatio = 0.60f,
+            mixDualAudioFocus = true
+        )
+
+        val outcome = ApkModule.loadApkFile(baseApk).use { mod ->
+            mod.setLoadDefaultFramework(false)
+            patcher.patchApkModule(mod, unsignedApk, config) {}
+        }
+        assertTrue("DUAL_WINDOW_MODE must inject runtime stub DEX", outcome.dexInjected)
+
+        ApkModule.loadApkFile(unsignedApk).use { patchedMod ->
+            patchedMod.setLoadDefaultFramework(false)
+            assertEquals("com.stremio.one.dual101", patchedMod.packageName)
+
+            val root = patchedMod.androidManifest.documentElement
+            val appElem = root.getElements { it.name == "application" }.asSequence().first()
+
+            val metas = appElem.getElements { it.name == "meta-data" }.asSequence().associate { meta ->
+                val k = meta.searchAttributeByResourceId(0x01010003)?.valueAsString.orEmpty()
+                val vAttr = meta.searchAttributeByResourceId(0x01010024)
+                val v = when (vAttr?.valueType) {
+                    ValueType.STRING -> vAttr.valueAsString
+                    ValueType.BOOLEAN -> vAttr.valueAsBoolean.toString()
+                    else -> vAttr?.data?.toString()
+                }
+                k to v
+            }
+
+            assertEquals("true", metas["com.aamaker.DUAL_AUTO_START"])
+            assertEquals("com.google.android.apps.maps", metas["com.aamaker.DUAL_SECONDARY_PKG"])
+            assertEquals("0.60", metas["com.aamaker.DUAL_SPLIT_RATIO"])
+            assertEquals("true", metas["com.aamaker.DUAL_MIX_AUDIO"])
+
+            val queriesElem = root.getElements { it.name == "queries" }.asSequence().firstOrNull()
+            assertNotNull("<queries> must exist", queriesElem)
+            val queriedPackages = queriesElem!!.getElements { it.name == "package" }.asSequence()
+                .mapNotNull { it.searchAttributeByResourceId(0x01010003)?.valueAsString }
+                .toSet()
+            assertTrue(queriedPackages.contains("com.aamaker.app"))
+            assertTrue(queriedPackages.contains("com.google.android.apps.maps"))
+
+            val queriedProviders = queriesElem.getElements { it.name == "provider" }.asSequence()
+                .mapNotNull { it.searchAttributeByResourceId(0x01010018)?.valueAsString }
+                .toSet()
+            assertTrue(queriedProviders.contains("com.aamaker.app.dualbridge"))
+        }
+    }
+
     private fun createBaseSplitApk(outFile: File) {
         val mod = ApkModule("base", com.reandroid.archive.ZipEntryMap())
         mod.setLoadDefaultFramework(false)

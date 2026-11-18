@@ -49,8 +49,23 @@ class GearheadXposedHook : IXposedHookLoadPackage {
         val pkgName = lpparam.packageName
         val processName = lpparam.processName ?: pkgName
 
-        if (pkgName == AAMAKER_PACKAGE) {
+        val isAAMakerOrCompanion = pkgName == AAMAKER_PACKAGE ||
+            (pkgName.startsWith("com.aamaker.") && !pkgName.contains("gearhead")) ||
+            ((pkgName.endsWith(".car") || pkgName.contains(".aa.")) &&
+                !pkgName.startsWith("android.") &&
+                !pkgName.startsWith("com.android.") &&
+                !pkgName.startsWith("com.google."))
+
+        if (isAAMakerOrCompanion) {
             hookSelfStatus(lpparam)
+            hookLsposedBridge(lpparam)
+            return
+        }
+
+        if (pkgName == "android") {
+            // Tuyệt đối không can thiệp vào System Server (DisplayManagerService/WindowManagerService/InputManager).
+            // Các hook tầng hệ thống làm sai lệch kết quả validatePackageName của AOSP và gây ném NullPointerException
+            // làm sập toàn bộ dịch vụ VirtualDevice / Projection của Android Auto khi kết nối với xe ô tô!
             return
         }
 
@@ -83,6 +98,48 @@ class GearheadXposedHook : IXposedHookLoadPackage {
             hookPackageInstallerSourceChecks(lpparam)
             hookActivityDistractionOptimization(lpparam)
             hookCarDrivingRestrictionsAndSensors(lpparam)
+            return
+        }
+
+        // Hỗ trợ các ứng dụng bên thứ 3 được người dùng tích chọn trong LSPosed chạy trên màn hình phụ (Split-Screen):
+        // Cho phép hiển thị xuyên qua trạng thái khóa màn hình điện thoại (showWhenLocked) khi nằm trên VirtualDisplay (> 0)
+        if (isSafeThirdPartyPackage(pkgName)) {
+            hookThirdPartyVirtualDisplayKeepAwake(lpparam)
+        }
+    }
+
+    private fun hookThirdPartyVirtualDisplayKeepAwake(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val activityCls = XposedHelpers.findClassIfExists("android.app.Activity", lpparam.classLoader) ?: return
+            val lifecycleHook = object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    try {
+                        val act = param.thisObject as? android.app.Activity ?: return
+                        val dispId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            runCatching { act.display?.displayId ?: 0 }.getOrDefault(0)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            runCatching { act.windowManager?.defaultDisplay?.displayId ?: 0 }.getOrDefault(0)
+                        }
+                        if (dispId > 0) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                runCatching { act.setShowWhenLocked(true) }
+                            }
+                            @Suppress("DEPRECATION")
+                            runCatching {
+                                act.window?.addFlags(
+                                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                                        android.view.WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+                                )
+                            }
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            XposedHelpers.findAndHookMethod(activityCls, "onCreate", Bundle::class.java, lifecycleHook)
+            XposedHelpers.findAndHookMethod(activityCls, "onResume", lifecycleHook)
+        } catch (_: Throwable) {
         }
     }
 
@@ -98,6 +155,29 @@ class GearheadXposedHook : IXposedHookLoadPackage {
         } catch (t: Throwable) {
             logInfo("Không thể hook trạng thái nội bộ: ${t.message}")
         }
+    }
+
+    private fun hookLsposedBridge(lpparam: XC_LoadPackage.LoadPackageParam) {
+        try {
+            val bridgeCls = XposedHelpers.findClassIfExists("com.mag.anyauto.LsposedBridge", lpparam.classLoader)
+            if (bridgeCls != null) {
+                XposedHelpers.findAndHookMethod(
+                    bridgeCls,
+                    "isHookActive",
+                    XC_MethodReplacement.returnConstant(true)
+                )
+                logInfo("Đã kích hoạt LsposedBridge cho gói ${lpparam.packageName}")
+            }
+        } catch (t: Throwable) {
+            logInfo("Không thể hook LsposedBridge: ${t.message}")
+        }
+    }
+
+    @Suppress("UNUSED_PARAMETER")
+    private fun hookSystemServerVirtualDisplayAndInput(lpparam: XC_LoadPackage.LoadPackageParam) {
+        // Cố tình để trống: Tuyệt đối không hook vào System Server (system_server / android).
+        // AAMaKer sử dụng Shizuku/Root daemon để quản lý VirtualDisplay & Touch event.
+        // Can thiệp vào DisplayManagerService/InputManagerService bằng Xposed sẽ làm crash VirtualDevice của Android Auto.
     }
 
     private fun isSafeThirdPartyPackage(pkgName: String?): Boolean {
@@ -349,6 +429,12 @@ class GearheadXposedHook : IXposedHookLoadPackage {
             meta.putBoolean("distractionOptimized", true)
             meta.putBoolean("com.google.android.gms.car.distractionOptimized", true)
             meta.putBoolean("com.android.automotive.distractionOptimized", true)
+            // Hỗ trợ đa cửa sổ (Split-Screen): cho phép resize, nhúng Activity trên VirtualDisplay phụ và hiển thị khi khóa màn hình
+            runCatching {
+                XposedHelpers.setIntField(actInfo, "resizeMode", 2) // ActivityInfo.RESIZE_MODE_RESIZEABLE
+                // FLAG_ALLOW_EMBEDDED (0x80000000) | FLAG_SHOW_WHEN_LOCKED (0x00800000) | FLAG_SHOW_FOR_ALL_USERS (0x00000400)
+                actInfo.flags = actInfo.flags or Int.MIN_VALUE or 0x00800000 or 0x00000400
+            }
         } catch (_: Throwable) {
         }
     }
@@ -502,7 +588,11 @@ class GearheadXposedHook : IXposedHookLoadPackage {
         try {
             val layout = getOrBuildSensorFieldLayout(eventObj.javaClass)
             val sensorTypeField = layout.sensorTypeField ?: return
-            val sensorType = sensorTypeField.getInt(eventObj)
+            val sensorType = try {
+                sensorTypeField.getInt(eventObj)
+            } catch (_: Throwable) {
+                return
+            }
 
             when (sensorType) {
                 SENSOR_TYPE_DRIVING_STATUS -> {

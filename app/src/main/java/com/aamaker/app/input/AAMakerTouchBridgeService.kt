@@ -16,15 +16,29 @@ import rikka.shizuku.Shizuku
 import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
 object AAMakerCentralBridgeExecutor {
 
     internal val executor = Executors.newSingleThreadExecutor()
+    private val authorizedDisplayOwners = ConcurrentHashMap<Int, String>()
     private var persistentShizukuProcess: Process? = null
     private var persistentShizukuWriter: OutputStreamWriter? = null
     private var cachedNewProcessMethod: Method? = null
+
+    fun registerAuthorizedDisplayOwner(displayId: Int, ownerPackage: String) {
+        if (displayId > Display.DEFAULT_DISPLAY && PackageNameValidator.isValidPackageName(ownerPackage)) {
+            authorizedDisplayOwners[displayId] = ownerPackage
+        }
+    }
+
+    fun unregisterAuthorizedDisplayOwner(displayId: Int) {
+        if (displayId > Display.DEFAULT_DISPLAY) {
+            authorizedDisplayOwners.remove(displayId)
+        }
+    }
 
     fun executeLaunchOnDisplay(
         context: Context,
@@ -44,8 +58,131 @@ object AAMakerCentralBridgeExecutor {
         val safePkg = parsedComp.packageName
         val safeCls = parsedComp.className
         val safeComp = "$safePkg/$safeCls"
-        val cmd = "cmd deviceidle tempwhitelist -d 300000 '$safePkg' >/dev/null 2>&1; am start --display $displayId --activity-single-top --activity-clear-top -n '$safeComp' >/dev/null 2>&1"
+        val binder = PrivilegedServerCoordinator.getOrStartServer(context)
+        if (binder != null) {
+            PrivilegedServerCoordinator.transactLaunchAppOnDisplay(binder, displayId, safePkg, safeCls)
+        }
+        val cmd = "cmd deviceidle whitelist +'$safePkg' >/dev/null 2>&1; " +
+            "cmd deviceidle tempwhitelist -d 3600000 '$safePkg' >/dev/null 2>&1; " +
+            "appops set '$safePkg' RUN_IN_BACKGROUND allow >/dev/null 2>&1; " +
+            "appops set '$safePkg' RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1; " +
+            "am set-standby-bucket '$safePkg' active >/dev/null 2>&1; " +
+            "am start --display $displayId --activity-single-top --activity-clear-top -n '$safeComp' >/dev/null 2>&1"
         runPrivilegedShellCommand(cmd)
+    }
+
+    fun executeLaunchSecondaryAppOnDisplay(
+        context: Context,
+        displayId: Int,
+        targetPackageName: String,
+        mixAudioFocus: Boolean,
+        authorizedHostPackage: String
+    ): Boolean {
+        if (!PackageNameValidator.isValidPackageName(targetPackageName) ||
+            !PackageNameValidator.isValidPackageName(authorizedHostPackage)
+        ) {
+            return false
+        }
+        if (!isValidVirtualDisplayForSender(context, displayId, authorizedHostPackage)) {
+            return false
+        }
+        val pm = context.packageManager
+        val launchIntent = pm.getLaunchIntentForPackage(targetPackageName)
+        var resolvedComponent = launchIntent?.component
+        if (resolvedComponent == null) {
+            val mainIntent = Intent(Intent.ACTION_MAIN).apply {
+                setPackage(targetPackageName)
+            }
+            val resolveList = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.queryIntentActivities(mainIntent, PackageManager.ResolveInfoFlags.of(0L))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.queryIntentActivities(mainIntent, 0)
+            }
+            val actInfo = resolveList.firstOrNull {
+                !it.activityInfo.name.contains("CarAppPermissionActivity")
+            }?.activityInfo
+            if (actInfo != null) {
+                resolvedComponent = ComponentName(targetPackageName, actInfo.name)
+            }
+        }
+        val comp = resolvedComponent ?: return false
+        if (!PackageNameValidator.isValidClassName(comp.className)) return false
+        val safePkg = targetPackageName
+        val safeComp = "$safePkg/${comp.className}"
+
+        // 1. Primary path: Direct Binder IPC to ActivityTaskManager inside PrivilegedServer (UID 2000 / 0)
+        // which moves existing tasks or starts the Activity directly onto displayId!
+        val binder = PrivilegedServerCoordinator.getOrStartServer(context)
+        if (binder != null) {
+            PrivilegedServerCoordinator.transactLaunchAppOnDisplay(binder, displayId, safePkg, comp.className)
+        }
+
+        val audioFocusCmd = if (mixAudioFocus) {
+            "appops set '$safePkg' TAKE_AUDIO_FOCUS ignore >/dev/null 2>&1; "
+        } else {
+            "appops set '$safePkg' TAKE_AUDIO_FOCUS allow >/dev/null 2>&1; "
+        }
+        // CRITICAL: If targetPackageName is already running on Display 0 (or another display), Android's
+        // ActivityTaskSupervisor ignores --display <displayId> and resumes the existing task on Display 0
+        // unless we use --activity-multiple-task --activity-new-task or move the task to displayId!
+        val keepAliveCmd = "cmd deviceidle whitelist +'$safePkg' >/dev/null 2>&1; " +
+            "cmd deviceidle tempwhitelist -d 3600000 '$safePkg' >/dev/null 2>&1; " +
+            "appops set '$safePkg' RUN_IN_BACKGROUND allow >/dev/null 2>&1; " +
+            "appops set '$safePkg' RUN_ANY_IN_BACKGROUND allow >/dev/null 2>&1; " +
+            "am set-standby-bucket '$safePkg' active >/dev/null 2>&1; " +
+            "wm dismiss-keyguard >/dev/null 2>&1; "
+        val cmd = "${audioFocusCmd}${keepAliveCmd}" +
+            "am start --display $displayId --windowingMode 1 --activity-single-top --activity-reorder-to-front --activity-new-task -n '$safeComp' >/dev/null 2>&1 || " +
+            "am start --display $displayId --windowingMode 1 --activity-new-task --activity-multiple-task -n '$safeComp' >/dev/null 2>&1 || " +
+            "am start --display $displayId --activity-new-task --activity-multiple-task -n '$safeComp' >/dev/null 2>&1 || " +
+            "(am force-stop '$safePkg' >/dev/null 2>&1; am start --display $displayId -n '$safeComp' >/dev/null 2>&1)"
+        runPrivilegedShellCommand(cmd)
+
+        // Direct ActivityOptions fallback (succeeds immediately when LSPosed system_server hook or PUBLIC display is active)
+        try {
+            val directIntent = Intent(Intent.ACTION_MAIN).apply {
+                component = comp
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                )
+            }
+            val opts = android.app.ActivityOptions.makeBasic().apply {
+                setLaunchDisplayId(displayId)
+            }
+            context.startActivity(directIntent, opts.toBundle())
+        } catch (_: Throwable) {
+        }
+        return true
+    }
+
+    fun enableMultiWindowSystemSettings() {
+        val cmd = "settings put global force_resizable_activities 1 >/dev/null 2>&1; " +
+            "settings put global enable_non_resizable_multi_window 1 >/dev/null 2>&1; " +
+            "settings put global enable_freeform_support 1 >/dev/null 2>&1"
+        runPrivilegedShellCommand(cmd)
+    }
+
+    fun submitPrivilegedCommandImmediate(cmd: String): Boolean {
+        if (runViaShizuku(cmd)) return true
+        return try {
+            val granted = Shell.isAppGrantedRoot()
+            val hasRoot = if (granted != null) {
+                granted
+            } else {
+                runCatching { Shell.getShell().isRoot }.getOrDefault(false)
+            }
+            if (hasRoot) {
+                Shell.cmd(cmd).submit()
+                true
+            } else {
+                false
+            }
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     fun executeTouchCommandFallback(
@@ -81,18 +218,47 @@ object AAMakerCentralBridgeExecutor {
         runPrivilegedShellCommand(cmd)
     }
 
+    fun executeSetPhoneBrightness(
+        dim: Boolean,
+        restoreBrightness: Int,
+        restoreMode: Int,
+        panelOffApplied: Boolean = false
+    ) {
+        if (dim) {
+            val cmd = "wm dismiss-keyguard >/dev/null 2>&1; " +
+                "settings put global stay_on_while_plugged_in 7 >/dev/null 2>&1; " +
+                "settings put system screen_brightness_mode 0 >/dev/null 2>&1; " +
+                "settings put system screen_brightness 0 >/dev/null 2>&1"
+            runPrivilegedShellCommand(cmd)
+        } else {
+            val safeBrightness = if (restoreBrightness in 40..255) restoreBrightness else 128
+            val safeMode = if (restoreMode in 0..1) restoreMode else 1
+            val cmd = "settings put system screen_brightness $safeBrightness >/dev/null 2>&1; settings put system screen_brightness_mode $safeMode >/dev/null 2>&1"
+            runPrivilegedShellCommand(cmd)
+        }
+    }
+
     private fun isValidVirtualDisplayForSender(
         context: Context,
         displayId: Int,
         verifiedSenderPackage: String
     ): Boolean {
         if (displayId <= Display.DEFAULT_DISPLAY) return false
+        val registeredOwner = authorizedDisplayOwners[displayId]
+        if (registeredOwner != null &&
+            (registeredOwner == verifiedSenderPackage || verifiedSenderPackage == context.packageName)
+        ) {
+            return true
+        }
         return try {
             val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return false
             val display = dm.getDisplay(displayId) ?: return false
             if (display.displayId <= Display.DEFAULT_DISPLAY) return false
             val expectedDisplayName = "AAMakerVirtualDisplay_$verifiedSenderPackage"
-            display.name == expectedDisplayName || verifiedSenderPackage == context.packageName
+            val dispName = display.name.orEmpty()
+            dispName == expectedDisplayName ||
+                dispName.startsWith("${expectedDisplayName}_") ||
+                verifiedSenderPackage == context.packageName
         } catch (_: Throwable) {
             false
         }
@@ -103,8 +269,13 @@ object AAMakerCentralBridgeExecutor {
             if (runViaShizuku(cmd)) return@execute
 
             try {
-                // Only submit immediately if root was already granted so su dialog cannot hang input thread
-                if (Shell.isAppGrantedRoot() == true) {
+                val granted = Shell.isAppGrantedRoot()
+                val hasRoot = if (granted != null) {
+                    granted
+                } else {
+                    runCatching { Shell.getShell().isRoot }.getOrDefault(false)
+                }
+                if (hasRoot) {
                     Shell.cmd(cmd).submit()
                 }
             } catch (_: Throwable) {

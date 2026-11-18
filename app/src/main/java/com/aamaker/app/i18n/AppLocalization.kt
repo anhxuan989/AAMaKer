@@ -222,6 +222,32 @@ data class AppStrings(
             AppLanguage.FR -> "Mode Arrêt / Jeu"
         }
         PatchStrategy.UNIVERSAL_INJECTION -> strategyUniversalTitle
+        PatchStrategy.DUAL_WINDOW_MODE -> when (language) {
+            AppLanguage.EN -> "Dual-Window Split Screen (2 Apps)"
+            AppLanguage.VI -> "Chia đôi màn hình (2 App song song)"
+            AppLanguage.ZH -> "双窗口分屏模式 (同屏双应用)"
+            AppLanguage.ES -> "Pantalla Dividida (2 Apps)"
+            AppLanguage.HI -> "डुअल-विंडो स्प्लिट स्क्रीन (2 ऐप्स)"
+            AppLanguage.AR -> "تقسيم الشاشة لتطبيقين (Dual-Window)"
+            AppLanguage.PT -> "Tela Dividida (2 Apps)"
+            AppLanguage.RU -> "Разделение экрана (2 приложения)"
+            AppLanguage.JA -> "2画面分割モード (2アプリ同時表示)"
+            AppLanguage.DE -> "Geteilter Bildschirm (2 Apps)"
+            AppLanguage.FR -> "Écran Partagé (2 Applications)"
+        }
+        PatchStrategy.ANYAUTO_SHIZUKU_MODE -> when (language) {
+            AppLanguage.EN -> "AnyAuto Shizuku Launcher"
+            AppLanguage.VI -> "Trình chiếu AnyAuto (Shizuku)"
+            AppLanguage.ZH -> "AnyAuto Shizuku 虚拟投影"
+            AppLanguage.ES -> "Lanzador AnyAuto (Shizuku)"
+            AppLanguage.HI -> "AnyAuto Shizuku लॉन्चर"
+            AppLanguage.AR -> "مشغل AnyAuto (Shizuku)"
+            AppLanguage.PT -> "Lançador AnyAuto (Shizuku)"
+            AppLanguage.RU -> "AnyAuto Shizuku Проекция"
+            AppLanguage.JA -> "AnyAuto Shizuku ランチャー"
+            AppLanguage.DE -> "AnyAuto Shizuku Starter"
+            AppLanguage.FR -> "Lanceur AnyAuto (Shizuku)"
+        }
     }
 
     fun strategyDescription(strategy: PatchStrategy): String = when (strategy) {
@@ -241,7 +267,153 @@ data class AppStrings(
             AppLanguage.FR -> "Interface native sur AA (Android 15+, fusion splits & mode jeu)."
         }
         PatchStrategy.UNIVERSAL_INJECTION -> strategyUniversalDesc
+        PatchStrategy.DUAL_WINDOW_MODE -> when (language) {
+            AppLanguage.EN -> "Run 2 apps side-by-side on 1 car screen with custom split ratio, swap & audio mix."
+            AppLanguage.VI -> "Chạy song song 2 ứng dụng trên 1 màn hình xe, đổi tỷ lệ, hoán đổi vị trí & phát tiếng đồng thời."
+            AppLanguage.ZH -> "在单个车载屏幕上并排运行 2 个应用，支持调节比例、左右互换与双音频混音。"
+            AppLanguage.ES -> "Ejecuta 2 apps en paralelo en la pantalla del coche con ajuste de proporción y mezcla de audio."
+            AppLanguage.HI -> "कार स्क्रीन पर एक साथ 2 ऐप्स चलाएं (अनुपात समायोजन, स्वैप और ऑडियो मिक्स सहित)।"
+            AppLanguage.AR -> "تشغيل تطبيقين جنباً إلى جنب على شاشة السيارة مع التحكم في النسبة ودمج الصوت."
+            AppLanguage.PT -> "Execute 2 apps lado a lado na tela do carro com ajuste de proporção, troca e mixagem de áudio."
+            AppLanguage.RU -> "Запуск 2 приложений рядом на одном экране авто с настройкой пропорций и микшированием звука."
+            AppLanguage.JA -> "車載画面で2つのアプリを同時表示。比率変更・左右入替・同時音声再生に対応。"
+            AppLanguage.DE -> "2 Apps nebeneinander auf einem Autobildschirm nutzen (Verhältnis, Tausch & Audio-Mix)."
+            AppLanguage.FR -> "Exécutez 2 applications côte à côte sur l'écran auto avec ratio ajustable et mixage audio."
+        }
+        PatchStrategy.ANYAUTO_SHIZUKU_MODE -> when (language) {
+            AppLanguage.EN -> "Projects any app onto the car screen via Shizuku Trusted VirtualDisplay & 60fps OpenGL. Leaves original app intact."
+            AppLanguage.VI -> "Chiếu ứng dụng lên xe qua Màn hình ảo Shizuku (Trusted VirtualDisplay + 60fps OpenGL). Giữ nguyên app gốc."
+            AppLanguage.ZH -> "通过 Shizuku 受信任虚拟显示与 60fps OpenGL 投射任意应用至车载屏幕，保持原应用完整。"
+            AppLanguage.ES -> "Proyecta cualquier app en la pantalla del coche mediante VirtualDisplay de Shizuku y OpenGL a 60fps. App original intacta."
+            AppLanguage.HI -> "Shizuku विश्वसनीय वर्चुअल डिस्प्ले और 60fps OpenGL द्वारा किसी भी ऐप को कार स्क्रीन पर चलाएं। मूल ऐप सुरक्षित रहता है।"
+            AppLanguage.AR -> "عرض أي تطبيق على شاشة السيارة عبر شاشة افتراضية موثوقة في Shizuku وOpenGL بمعدل 60 إطاراً في الثانية دون تعديل التطبيق الأصلي."
+            AppLanguage.PT -> "Projeta qualquer app na tela do carro via VirtualDisplay Shizuku e OpenGL a 60fps. Mantém app original intacto."
+            AppLanguage.RU -> "Проекция любого приложения на экран авто через доверенный дисплей Shizuku и 60fps OpenGL. Исходное приложение не изменяется."
+            AppLanguage.JA -> "Shizukuの高信頼仮想ディスプレイと60fps OpenGLでアプリを車載画面に投影。元のアプリは変更されません。"
+            AppLanguage.DE -> "Projiziert jede App über Shizuku Trusted VirtualDisplay & 60fps OpenGL auf den Autobildschirm. Original-App bleibt unberührt."
+            AppLanguage.FR -> "Projette n'importe quelle app sur l'écran auto via VirtualDisplay Shizuku et OpenGL 60fps. Conserve l'application d'origine intacte."
+        }
     }
+
+    val dualWindowSectionTitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Dual-Window (Split-Screen) Settings:"
+            AppLanguage.VI -> "Cấu hình Chia đôi màn hình (2 App):"
+            AppLanguage.ZH -> "双窗口分屏设置:"
+            AppLanguage.ES -> "Ajustes de Pantalla Dividida (2 Apps):"
+            AppLanguage.HI -> "डुअल-विंडो (स्प्लिट-स्क्रीन) सेटिंग्स:"
+            AppLanguage.AR -> "إعدادات تقسيم الشاشة (تطبيقين):"
+            AppLanguage.PT -> "Configurações de Tela Dividida (2 Apps):"
+            AppLanguage.RU -> "Настройки разделения экрана (2 прил.):"
+            AppLanguage.JA -> "2画面分割 (スプリットスクリーン) 設定:"
+            AppLanguage.DE -> "Split-Screen-Einstellungen (2 Apps):"
+            AppLanguage.FR -> "Paramètres d'écran partagé (2 Apps) :"
+        }
+
+    val anyAutoInfoBanner: String
+        get() = when (language) {
+            AppLanguage.EN -> "Uses AnyAuto VirtualDisplay engine via Shizuku (UID 2000). The original app remains 100% intact, with 60 FPS GPU rendering, native touch, rotary knob pointer and phone screen off mode."
+            AppLanguage.VI -> "Sử dụng engine ảo hóa màn hình AnyAuto qua Shizuku (UID 2000). Ứng dụng gốc giữ nguyên 100%, đồ họa 60 FPS GPU mượt mà, hỗ trợ cảm ứng, con trỏ núm xoay và tắt màn hình điện thoại khi lái xe."
+            AppLanguage.ZH -> "使用 AnyAuto 虚拟显示引擎与 Shizuku 权限 (UID 2000)。原应用保持 100% 完整，具备 60 FPS GPU 渲染、原生触控、旋钮指针以及熄屏驾驶模式。"
+            AppLanguage.ES -> "Utiliza el motor VirtualDisplay de AnyAuto mediante Shizuku (UID 2000). La app original permanece 100% intacta, con renderizado GPU a 60 FPS, control táctil, puntero para perilla giratoria y modo pantalla apagada."
+            AppLanguage.HI -> "Shizuku (UID 2000) के माध्यम से AnyAuto वर्चुअल डिस्प्ले इंजन का उपयोग करता है। मूल ऐप 100% सुरक्षित रहता है, 60 FPS GPU रेंडरिंग, स्पर्श, रोटरी नॉब और स्क्रीन ऑफ मोड के साथ।"
+            AppLanguage.AR -> "يستخدم محرك العرض الافتراضي AnyAuto عبر Shizuku (UID 2000). يبقى التطبيق الأصلي سليماً 100% مع أداء 60 إطاراً في الثانية ودعم اللمس ومؤشر مقبض التدوير وإطفاء شاشة الهاتف."
+            AppLanguage.PT -> "Utiliza o motor VirtualDisplay AnyAuto via Shizuku (UID 2000). O aplicativo original permanece 100% intacto, com renderização GPU a 60 FPS, toque fluido, controle por botão giratório e tela apagada."
+            AppLanguage.RU -> "Использует движок AnyAuto через Shizuku (UID 2000). Исходное приложение остаётся на 100% нетронутым, 60 FPS GPU, поддержка касаний, указатель для шайбы и режим отключения экрана телефона."
+            AppLanguage.JA -> "Shizuku (UID 2000) 経由の AnyAuto 仮想ディスプレイエンジンを使用。元のアプリは完全無傷で、60 FPS GPU 描画、タッチ操作、ロータリーノブ、画面消灯モードに対応。"
+            AppLanguage.DE -> "Nutzt die AnyAuto VirtualDisplay-Engine über Shizuku (UID 2000). Die Original-App bleibt 100% unangetastet, mit 60 FPS GPU-Rendering, Touch, Drehknopf-Zeiger und Display-Aus-Modus."
+            AppLanguage.FR -> "Utilise le moteur VirtualDisplay d'AnyAuto via Shizuku (UID 2000). L'application d'origine reste intacte à 100%, avec rendu GPU 60 FPS, tactile natif, pointeur molette et écran éteint."
+        }
+
+    val dualSecondaryAppLabel: String
+        get() = when (language) {
+            AppLanguage.EN -> "2nd App (Right Pane)"
+            AppLanguage.VI -> "Ứng dụng thứ 2 (Cửa sổ cạnh bên)"
+            AppLanguage.ZH -> "第二个应用 (副窗口)"
+            AppLanguage.ES -> "2.ª Aplicación (Panel secundario)"
+            AppLanguage.HI -> "दूसरा ऐप (साइड विंडो)"
+            AppLanguage.AR -> "التطبيق الثاني (النافذة الجانبية)"
+            AppLanguage.PT -> "2º Aplicativo (Painel lateral)"
+            AppLanguage.RU -> "2-е приложение (Боковое окно)"
+            AppLanguage.JA -> "2つ目のアプリ (サブ画面)"
+            AppLanguage.DE -> "2. App (Nebenfenster)"
+            AppLanguage.FR -> "2e Application (Volet secondaire)"
+        }
+
+    val dualSecondaryChooseOnCarHint: String
+        get() = when (language) {
+            AppLanguage.EN -> "Choose on Car Screen (Dynamic Picker)"
+            AppLanguage.VI -> "Chọn trực tiếp trên màn hình xe (Linh hoạt)"
+            AppLanguage.ZH -> "在车机屏幕上动态选择"
+            AppLanguage.ES -> "Elegir en la pantalla del coche"
+            AppLanguage.HI -> "कार स्क्रीन पर चुनें"
+            AppLanguage.AR -> "الاختيار مباشرة على شاشة السيارة"
+            AppLanguage.PT -> "Escolher na tela do carro"
+            AppLanguage.RU -> "Выбрать на экране автомобиля"
+            AppLanguage.JA -> "車載画面で後から選択"
+            AppLanguage.DE -> "Auf dem Autobildschirm wählen"
+            AppLanguage.FR -> "Choisir sur l'écran de la voiture"
+        }
+
+    val dualPickSecondaryButton: String
+        get() = when (language) {
+            AppLanguage.EN -> "Select 2nd App"
+            AppLanguage.VI -> "Chọn App thứ 2"
+            AppLanguage.ZH -> "选择副应用"
+            AppLanguage.ES -> "Elegir 2.ª App"
+            AppLanguage.HI -> "दूसरा ऐप चुनें"
+            AppLanguage.AR -> "اختر التطبيق 2"
+            AppLanguage.PT -> "Escolher 2º App"
+            AppLanguage.RU -> "Выбрать 2-е прил."
+            AppLanguage.JA -> "2つ目のアプリ選択"
+            AppLanguage.DE -> "2. App wählen"
+            AppLanguage.FR -> "Choisir 2e App"
+        }
+
+    val dualSplitRatioLabel: String
+        get() = when (language) {
+            AppLanguage.EN -> "Default Split Ratio:"
+            AppLanguage.VI -> "Tỷ lệ chia màn hình mặc định:"
+            AppLanguage.ZH -> "默认分屏比例:"
+            AppLanguage.ES -> "Proporción de división:"
+            AppLanguage.HI -> "डिफ़ॉल्ट विभाजन अनुपात:"
+            AppLanguage.AR -> "نسبة تقسيم الشاشة الافتراضية:"
+            AppLanguage.PT -> "Proporção padrão da tela:"
+            AppLanguage.RU -> "Пропорция разделения по умолчанию:"
+            AppLanguage.JA -> "標準の画面分割比率:"
+            AppLanguage.DE -> "Standard-Teilverhältnis:"
+            AppLanguage.FR -> "Ratio de partage par défaut :"
+        }
+
+    val dualMixAudioTitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Simultaneous Audio Mix (No Pause)"
+            AppLanguage.VI -> "Phát âm thanh song song (Không ngắt nhạc)"
+            AppLanguage.ZH -> "双应用同时发声 (不抢占音频焦点)"
+            AppLanguage.ES -> "Mezcla de audio simultánea (Sin pausas)"
+            AppLanguage.HI -> "एक साथ ऑडियो चलाएं (बिना रुके)"
+            AppLanguage.AR -> "تشغيل الصوت معاً دون توقف"
+            AppLanguage.PT -> "Mixagem de Áudio (Sem pausar música)"
+            AppLanguage.RU -> "Одновременный звук (Без паузы)"
+            AppLanguage.JA -> "2アプリ同時音声再生 (一時停止防止)"
+            AppLanguage.DE -> "Gleichzeitige Audio-Wiedergabe"
+            AppLanguage.FR -> "Audio simultané (Sans coupure)"
+        }
+
+    val dualMixAudioDesc: String
+        get() = when (language) {
+            AppLanguage.EN -> "Allows Navigation voice & Video/Music app to play together via Shizuku/Root."
+            AppLanguage.VI -> "Cho phép Bản đồ và YouTube/Nhạc phát tiếng cùng lúc qua Shizuku/Root."
+            AppLanguage.ZH -> "通过 Shizuku/Root 允许导航播报与视频/音乐同时播放。"
+            AppLanguage.ES -> "Permite que navegación y música/video suenen a la vez vía Shizuku/Root."
+            AppLanguage.HI -> "Shizuku/Root द्वारा मैप्स और वीडियो/म्यूज़िक की आवाज़ एक साथ चलने दें।"
+            AppLanguage.AR -> "يسمح بتشغيل صوت الخرائط والفيديو/الموسيقى معاً عبر Shizuku/Root."
+            AppLanguage.PT -> "Permite que mapas e vídeo/música toquem juntos via Shizuku/Root."
+            AppLanguage.RU -> "Позволяет навигатору и видео/музыке звучать одновременно (Shizuku/Root)."
+            AppLanguage.JA -> "Shizuku/Root経由でナビ音声と動画・音楽を同時に再生します。"
+            AppLanguage.DE -> "Erlaubt gleichzeitigen Ton von Navigation & Video/Musik über Shizuku/Root."
+            AppLanguage.FR -> "Permet au GPS et à la vidéo/musique de jouer ensemble via Shizuku/Root."
+        }
 
     val compatOptionsHeaderLabel: String
         get() = when (language) {
@@ -515,7 +687,7 @@ object AppTranslations {
         bannerExternalTitle = "Import APK / APKS / XAPK",
         bannerExternalSubtitle = "Select an APK file to patch for AA or install directly with Google Play source",
         chooseFileButton = "Patch File",
-        chooseFileDirectInstallButton = "Install Original (Play Source)",
+        chooseFileDirectInstallButton = "Install Original",
         searchPlaceholder = "Search app or package...",
         clearSearch = "Clear",
         filterExistingAAChip = "AA Ready",
@@ -616,7 +788,7 @@ object AppTranslations {
         bannerExternalTitle = "Nhập file APK / APKS / XAPK",
         bannerExternalSubtitle = "Chọn file từ máy để patch AA hoặc cài gốc với nguồn Google Play",
         chooseFileButton = "Chọn file để Patch",
-        chooseFileDirectInstallButton = "Cài APK gốc (Nguồn Play)",
+        chooseFileDirectInstallButton = "Cài APK gốc",
         searchPlaceholder = "Tìm tên app hoặc package...",
         clearSearch = "Xóa",
         filterExistingAAChip = "Có sẵn AA",
@@ -717,7 +889,7 @@ object AppTranslations {
         bannerExternalTitle = "导入 APK / APKS / XAPK",
         bannerExternalSubtitle = "选择本地安装包以注入 AA 功能，或伪装 Play 商店直接安装",
         chooseFileButton = "选择文件修补",
-        chooseFileDirectInstallButton = "安装原版 (伪装 Play)",
+        chooseFileDirectInstallButton = "安装原版",
         searchPlaceholder = "搜索应用名或包名...",
         clearSearch = "清除",
         filterExistingAAChip = "已支持 AA",
@@ -818,7 +990,7 @@ object AppTranslations {
         bannerExternalTitle = "Importar APK / APKS / XAPK",
         bannerExternalSubtitle = "Elige un archivo APK para parchear para AA o instalar como Google Play",
         chooseFileButton = "Elegir para Parchear",
-        chooseFileDirectInstallButton = "Instalar Original (Google Play)",
+        chooseFileDirectInstallButton = "Instalar Original",
         searchPlaceholder = "Buscar app o paquete...",
         clearSearch = "Borrar",
         filterExistingAAChip = "Con AA",
@@ -919,7 +1091,7 @@ object AppTranslations {
         bannerExternalTitle = "APK / APKS / XAPK आयात करें",
         bannerExternalSubtitle = "AA के लिए पैच करने या Google Play स्रोत से इंस्टॉल करने के लिए फ़ाइल चुनें",
         chooseFileButton = "पैच के लिए चुनें",
-        chooseFileDirectInstallButton = "मूल APK इंस्टॉल (Play स्रोत)",
+        chooseFileDirectInstallButton = "मूल APK इंस्टॉल",
         searchPlaceholder = "ऐप या पैकेज खोजें...",
         clearSearch = "साफ़ करें",
         filterExistingAAChip = "AA तैयार",
@@ -1020,7 +1192,7 @@ object AppTranslations {
         bannerExternalTitle = "استيراد APK / APKS / XAPK",
         bannerExternalSubtitle = "اختر ملف APK لتعديله لنظام AA أو تثبيته بمصدر Google Play",
         chooseFileButton = "اختيار للتعديل",
-        chooseFileDirectInstallButton = "تثبيت الأصلي (مصدر Play)",
+        chooseFileDirectInstallButton = "تثبيت الأصلي",
         searchPlaceholder = "بحث عن تطبيق أو حزمة...",
         clearSearch = "مسح",
         filterExistingAAChip = "يدعم AA",
@@ -1121,7 +1293,7 @@ object AppTranslations {
         bannerExternalTitle = "Importar APK / APKS / XAPK",
         bannerExternalSubtitle = "Escolha um APK para aplicar patch AA ou instalar como Google Play",
         chooseFileButton = "Escolher para Patch",
-        chooseFileDirectInstallButton = "Instalar Original (Google Play)",
+        chooseFileDirectInstallButton = "Instalar Original",
         searchPlaceholder = "Buscar app ou pacote...",
         clearSearch = "Limpar",
         filterExistingAAChip = "Com AA",
@@ -1222,7 +1394,7 @@ object AppTranslations {
         bannerExternalTitle = "Импорт APK / APKS / XAPK",
         bannerExternalSubtitle = "Выберите файл APK для патча под AA или установки как из Google Play",
         chooseFileButton = "Выбрать для патча",
-        chooseFileDirectInstallButton = "Установить оригинал (Play)",
+        chooseFileDirectInstallButton = "Установить оригинал",
         searchPlaceholder = "Поиск по имени или пакету...",
         clearSearch = "Очистить",
         filterExistingAAChip = "С поддержкой AA",
@@ -1323,7 +1495,7 @@ object AppTranslations {
         bannerExternalTitle = "APK / APKS / XAPK を読み込む",
         bannerExternalSubtitle = "APKを選択してAA対応化、またはPlayストア提供元として直接導入",
         chooseFileButton = "パッチ用に選択",
-        chooseFileDirectInstallButton = "元APKを導入 (Play偽装)",
+        chooseFileDirectInstallButton = "元APKを導入",
         searchPlaceholder = "アプリ名やパッケージ名を検索...",
         clearSearch = "クリア",
         filterExistingAAChip = "AA対応済",
@@ -1424,7 +1596,7 @@ object AppTranslations {
         bannerExternalTitle = "APK / APKS / XAPK importieren",
         bannerExternalSubtitle = "APK wählen, um sie für AA zu patchen oder als Google Play zu installieren",
         chooseFileButton = "Datei patchen",
-        chooseFileDirectInstallButton = "Original installieren (Play)",
+        chooseFileDirectInstallButton = "Original installieren",
         searchPlaceholder = "App oder Paket suchen...",
         clearSearch = "Löschen",
         filterExistingAAChip = "AA-fähig",
@@ -1525,7 +1697,7 @@ object AppTranslations {
         bannerExternalTitle = "Importer APK / APKS / XAPK",
         bannerExternalSubtitle = "Choisissez un APK à patcher pour AA ou à installer comme Google Play",
         chooseFileButton = "Choisir pour Patcher",
-        chooseFileDirectInstallButton = "Installer l'Original (Play)",
+        chooseFileDirectInstallButton = "Installer l'Original",
         searchPlaceholder = "Rechercher une app ou un package...",
         clearSearch = "Effacer",
         filterExistingAAChip = "Compatible AA",

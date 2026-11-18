@@ -14,6 +14,12 @@
   <img src="screenshots/environment_status.jpg" alt="Environment Status Screen" width="30%" />
 </p>
 
+<p align="center">
+  <img src="screenshots/car_split_screen.jpg" alt="Android Auto Split-Screen & Head Unit Controls" width="92%" />
+  <br />
+  <em>Android Auto in-car interface: Dual-window split-screen projection with on-screen controls (50:50 / 60:40 / 70:30 ratio, app swapping, independent back navigation, audio toggle, and density scaling).</em>
+</p>
+
 ---
 
 ## ✨ Key Features
@@ -32,6 +38,7 @@
   - **Use While Driving (`distractionOptimized`):** Injects distraction-optimized flags across activities so apps remain usable while the vehicle is in motion.
   - **Gamepad Support:** Injects hardware controller compatibility flags and relaxes mandatory hardware `uses-feature` constraints.
   - **Widescreen & Orientation Unlock:** Unlocks screen rotation and full-screen aspect ratios for car head units.
+  - **Dual-Window & Split-Screen Projection:** Run two apps simultaneously side-by-side on your car screen (e.g., Navigation + Video/Media), featuring customizable split ratios (50:50, 60:40, 70:30), left/right pane swapping, on-screen density adjustment, independent back navigation, audio routing toggle, and phone screen dimming.
   - **Touch Bridge:** Built-in Accessibility Touch Bridge service and optional Root shell (`su`) touch injection for Universal AA Wrapper apps.
 
 ### 🚀 Multi-Mode Google Play Source Installer
@@ -101,7 +108,7 @@ To ensure Android Auto recognizes patched apps as coming from Google Play:
 1. Open **AAMaKer** and stay on the **Apps** tab.
 2. Choose your target from one of two sources:
    - **Installed Apps:** Browse or search your installed apps list. Use the **AA Ready** filter to find apps that already have Android Auto support, or **System Apps** to include system packages. Tap any app to select it.
-   - **External File (`APK` / `APKS` / `XAPK` / `APKM`):** Tap **Patch File** at the top banner to import an external package from device storage, or tap **Install Original (Play Source)** if you only want to install an unmodified APK with a Google Play source.
+   - **External File (`APK` / `APKS` / `XAPK` / `APKM`):** Tap **Patch File** at the top banner to import an external package from device storage, or tap **Install Original** if you only want to install an unmodified APK with a Google Play source.
 
 ### Step 2: Configure Patch Strategy & Options
 Once an app is selected, you will be taken to the **Patch & Install** tab:

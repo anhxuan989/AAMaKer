@@ -48,6 +48,13 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
+        <!-- Dual-Window Privileged Display & Input IPC Provider -->
+        <provider
+            android:name=".input.AAMakerDualDisplayProvider"
+            android:authorities="${applicationId}.dualbridge"
+            android:enabled="true"
+            android:exported="true" />
+
         <activity
             android:name=".MainActivity"
             android:configChanges="locale|layoutDirection"

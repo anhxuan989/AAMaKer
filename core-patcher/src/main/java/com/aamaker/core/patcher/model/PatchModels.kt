@@ -21,7 +21,25 @@ enum class PatchStrategy(
     UNIVERSAL_INJECTION(
         title = "Chuyển App thường sang AA",
         description = "Đưa mọi ứng dụng (Video, Bản đồ, Web...) lên màn hình xe, hỗ trợ cảm ứng."
+    ),
+    DUAL_WINDOW_MODE(
+        title = "Chia đôi màn hình (2 App)",
+        description = "Chạy song song 2 ứng dụng trên 1 màn hình Android Auto, tùy chỉnh tỷ lệ & trộn âm thanh."
+    ),
+    ANYAUTO_SHIZUKU_MODE(
+        title = "Trình chiếu AnyAuto (Shizuku)",
+        description = "Màn hình ảo Trusted VirtualDisplay qua Shizuku, 60 FPS GPU, giữ nguyên app gốc, tạo launcher riêng trên xe."
     )
+}
+
+enum class SplitRatioPreset(
+    val ratioValue: Float,
+    val displayLabel: String
+) {
+    EQUAL_50_50(0.50f, "50 : 50"),
+    LEFT_60_40(0.60f, "60 : 40"),
+    LEFT_70_30(0.70f, "70 : 30"),
+    RIGHT_40_60(0.40f, "40 : 60")
 }
 
 enum class CarAppCategory(
@@ -51,7 +69,11 @@ data class PatchConfig(
     val unlockScreenOrientation: Boolean = true,
     val useRootShellForTouch: Boolean = false,
     val removeSignatureVerification: Boolean = true,
-    val preferredLanguageCode: String? = null
+    val preferredLanguageCode: String? = null,
+    val secondaryPackageName: String? = null,
+    val defaultSplitRatio: Float = 0.50f,
+    val mixDualAudioFocus: Boolean = true,
+    val autoStartDualWindow: Boolean = false
 )
 
 sealed class PatchResult {

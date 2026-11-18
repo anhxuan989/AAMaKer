@@ -27,6 +27,7 @@ import com.aamaker.core.patcher.model.CarAppCategory
 import com.aamaker.core.patcher.model.PatchConfig
 import com.aamaker.core.patcher.model.PatchResult
 import com.aamaker.core.patcher.model.PatchStrategy
+import com.aamaker.core.patcher.model.SplitRatioPreset
 import com.aamaker.core.patcher.security.PackageNameValidator
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -69,6 +70,10 @@ data class MainUiState(
     val enableGamepadSupport: Boolean = true,
     val unlockScreenOrientation: Boolean = true,
     val useRootShellForTouch: Boolean = false,
+    val secondaryPackageName: String = "",
+    val secondaryAppLabel: String = "",
+    val selectedSplitPreset: SplitRatioPreset = SplitRatioPreset.EQUAL_50_50,
+    val mixDualAudioFocus: Boolean = true,
     val isWorking: Boolean = false,
     val lastPatchedApk: File? = null,
     val lastPatchedPackageName: String? = null,
@@ -156,6 +161,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     envStatus = env,
                     selectedInstallMode = env.recommendedInstallMode
                 )
+            }
+            if (env.isShizukuPermissionGranted || env.isRootAvailable) {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        com.aamaker.app.input.PrivilegedServerCoordinator.getOrStartServer(getApplication())
+                    }
+                }
             }
         }
     }
@@ -343,6 +355,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(useRootShellForTouch = enabled) }
     }
 
+    fun selectSecondaryApp(candidate: TargetAppCandidate?) {
+        _uiState.update { state ->
+            val secPkg = candidate?.packageName.orEmpty()
+            val secLabel = candidate?.appName.orEmpty()
+            val suggestedName = if (
+                state.selectedStrategy == PatchStrategy.DUAL_WINDOW_MODE &&
+                state.selectedCandidate != null &&
+                secLabel.isNotBlank() &&
+                (state.customAppName.isBlank() || state.customAppName == state.selectedCandidate.appName)
+            ) {
+                "${state.selectedCandidate.appName} + $secLabel"
+            } else {
+                state.customAppName
+            }
+            state.copy(
+                secondaryPackageName = secPkg,
+                secondaryAppLabel = secLabel,
+                customAppName = suggestedName
+            )
+        }
+    }
+
+    fun updateSplitPreset(preset: SplitRatioPreset) {
+        _uiState.update { it.copy(selectedSplitPreset = preset) }
+    }
+
+    fun updateMixDualAudioFocus(enabled: Boolean) {
+        _uiState.update { it.copy(mixDualAudioFocus = enabled) }
+    }
+
     fun clearLogs() {
         _uiState.update { it.copy(logEntries = emptyList(), statusBannerEntry = null) }
     }
@@ -415,7 +457,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 enableGamepadSupport = state.enableGamepadSupport,
                 unlockScreenOrientation = state.unlockScreenOrientation,
                 useRootShellForTouch = state.useRootShellForTouch,
-                preferredLanguageCode = explicitLangCode
+                preferredLanguageCode = explicitLangCode,
+                secondaryPackageName = state.secondaryPackageName.takeIf { it.isNotBlank() },
+                defaultSplitRatio = state.selectedSplitPreset.ratioValue,
+                mixDualAudioFocus = state.mixDualAudioFocus,
+                autoStartDualWindow = state.selectedStrategy == PatchStrategy.DUAL_WINDOW_MODE
             )
 
             when (val patchRes = patcherPipeline.executePatch(config) { appendLog(it) }) {

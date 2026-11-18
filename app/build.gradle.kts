@@ -38,8 +38,8 @@ android {
         applicationId = "com.aamaker.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.0.4 "
 
         vectorDrawables {
             useSupportLibrary = true
@@ -47,6 +47,12 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (hasValidReleaseKeystore) {
             create("releaseKey") {
                 storeFile = releaseKeystoreFile

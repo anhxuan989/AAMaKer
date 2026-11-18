@@ -99,6 +99,14 @@ class AAMakerCarAppServiceImpl : androidx.car.app.CarAppService() {
     override fun onCreateSession(): Session {
         return AAMakerCarSession()
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            PhoneScreenDimManager.restorePhoneScreen(applicationContext, keepSessionAwake = false)
+        } catch (_: Throwable) {
+        }
+    }
 }
 
 class AAMakerCarSession : Session() {
@@ -111,6 +119,8 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
     private var virtualDisplay: VirtualDisplay? = null
     private var virtualDisplayImageReader: ImageReader? = null
+    @Volatile
+    private var privilegedPrimaryDisplayId: Int = Display.INVALID_DISPLAY
     private var carOutputSurface: Surface? = null
     private val renderBuffers = arrayOfNulls<Bitmap>(2)
     private val renderCanvases = arrayOfNulls<SafeSoftwareCanvas>(2)
@@ -145,6 +155,278 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     private var persistentSuWriter: OutputStreamWriter? = null
     private val safeShellIdentifierRegex = Regex("^[a-zA-Z0-9._/$]+$")
     private var lastGpuMirrorFrameMs: Long = 0L
+    @Volatile
+    private var hasReceivedGpuPrimaryFrame: Boolean = false
+    private val gpuPrimaryBitmapLock = Any()
+    private var lastGpuPrimaryBitmap: Bitmap? = null
+    private var lastGpuPrimaryWidth: Int = 0
+    private var lastGpuPrimaryHeight: Int = 0
+    private var primaryDisplayCurrentW: Int = 0
+    private var primaryDisplayCurrentH: Int = 0
+    private var primaryDisplayCurrentDpi: Int = 0
+    private var lastScrollFocusX: Float = -1f
+    private var isLastInteractionOnSecondary: Boolean = false
+
+    private val dualController: DualWindowController by lazy {
+        DualWindowController(
+            context = carContext,
+            bridgeTokenProvider = { getBridgeAuthToken() },
+            langProvider = { currentLang() },
+            onRequestRepaint = {
+                if (isSurfaceReady) {
+                    val now = SystemClock.uptimeMillis()
+                    val screenLocked = isPhoneScreenLockedOrOff()
+                    val gpuBmp = lastGpuPrimaryBitmap
+                    val gpuFresh = !screenLocked &&
+                        hasReceivedGpuPrimaryFrame &&
+                        gpuBmp != null &&
+                        !gpuBmp.isRecycled &&
+                        (now - lastGpuMirrorFrameMs) < 900L
+                    if (gpuFresh && gpuBmp != null && dualController.isDualModeActive) {
+                        postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
+                    } else {
+                        requestCoalescedFrameRender()
+                    }
+                }
+            },
+            onPrimaryDisplayResizeRequested = { newW, newH, newDpi ->
+                rebuildOrResizePrimaryVirtualDisplay(newW, newH, newDpi)
+            }
+        )
+    }
+
+    private fun activePrimaryDisplayId(): Int {
+        val privId = privilegedPrimaryDisplayId
+        if (privId > Display.DEFAULT_DISPLAY) return privId
+        return virtualDisplay?.display?.displayId ?: Display.DEFAULT_DISPLAY
+    }
+
+    private fun resolveActivePrimaryDisplay(): Display? {
+        val vdDisp = virtualDisplay?.display
+        if (vdDisp != null) return vdDisp
+        val privId = privilegedPrimaryDisplayId
+        if (privId > Display.DEFAULT_DISPLAY) {
+            return try {
+                val dm = carContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+                dm?.getDisplay(privId)
+            } catch (_: Throwable) {
+                null
+            }
+        }
+        return null
+    }
+
+    private fun rebuildOrResizePrimaryVirtualDisplay(newW: Int, newH: Int, newDpi: Int) {
+        if (!isSurfaceReady || newW <= 0 || newH <= 0) return
+        val safeDpi = newDpi.coerceIn(100, 640)
+        if (primaryDisplayCurrentW == newW &&
+            primaryDisplayCurrentH == newH &&
+            primaryDisplayCurrentDpi == safeDpi &&
+            (virtualDisplay != null || privilegedPrimaryDisplayId > Display.DEFAULT_DISPLAY)
+        ) {
+            return
+        }
+        try {
+            val existingReader = virtualDisplayImageReader
+            val targetReader = if (existingReader == null || existingReader.width != newW || existingReader.height != newH) {
+                createPrimaryImageReader(newW, newH)
+            } else {
+                existingReader
+            }
+
+            if (privilegedPrimaryDisplayId > Display.DEFAULT_DISPLAY) {
+                val req = Bundle().apply {
+                    putParcelable("surface", targetReader.surface)
+                    putInt("width", newW)
+                    putInt("height", newH)
+                    putInt("dpi", safeDpi)
+                    putString("slot", "primary")
+                }
+                getOrCreateSurfacePostHandler().post {
+                    runCatching {
+                        val res = dualController.sendBridgeCommand("create_secondary_display", req)
+                        val updatedId = res?.getInt("display_id", Display.INVALID_DISPLAY) ?: Display.INVALID_DISPLAY
+                        if (updatedId > Display.DEFAULT_DISPLAY) {
+                            privilegedPrimaryDisplayId = updatedId
+                        }
+                    }
+                }
+            } else {
+                val vd = virtualDisplay ?: return
+                vd.resize(newW, newH, safeDpi)
+                if (targetReader !== existingReader) {
+                    vd.surface = targetReader.surface
+                }
+            }
+
+            if (targetReader !== existingReader) {
+                runCatching { existingReader?.close() }
+                virtualDisplayImageReader = targetReader
+            }
+            primaryDisplayCurrentW = newW
+            primaryDisplayCurrentH = newH
+            primaryDisplayCurrentDpi = safeDpi
+            requestCoalescedFrameRender()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun createPrimaryImageReader(readerW: Int, readerH: Int): ImageReader {
+        val bgHandler = getOrCreateSurfacePostHandler()
+        return ImageReader.newInstance(readerW, readerH, PixelFormat.RGBA_8888, 2).apply {
+            setOnImageAvailableListener({ r ->
+                val image = try {
+                    r.acquireLatestImage()
+                } catch (_: Throwable) {
+                    null
+                } ?: return@setOnImageAvailableListener
+                try {
+                    val outSurface = carOutputSurface
+                    if (!isSurfaceReady || outSurface == null || !outSurface.isValid) {
+                        return@setOnImageAvailableListener
+                    }
+                    val vDisplayId = activePrimaryDisplayId()
+                    if (findAnyActivityDecorViewsInProcess(vDisplayId).isEmpty() && privilegedPrimaryDisplayId <= Display.DEFAULT_DISPLAY) {
+                        return@setOnImageAvailableListener
+                    }
+                    try {
+                        val planes = image.planes
+                        if (planes.isNotEmpty()) {
+                            val imgW = image.width.takeIf { it > 0 } ?: readerW
+                            val imgH = image.height.takeIf { it > 0 } ?: readerH
+                            val plane = planes[0]
+                            val pixelStride = plane.pixelStride
+                            val rowStride = plane.rowStride
+                            val rowPadding = rowStride - pixelStride * imgW
+                            val strideWidth = imgW + (if (pixelStride > 0) rowPadding / pixelStride else 0)
+                            if (strideWidth >= imgW && imgH > 0) {
+                                synchronized(gpuPrimaryBitmapLock) {
+                                    var bmp = lastGpuPrimaryBitmap
+                                    if (bmp == null || bmp.isRecycled || bmp.width != strideWidth || bmp.height != imgH) {
+                                        bmp?.recycle()
+                                        bmp = Bitmap.createBitmap(strideWidth, imgH, Bitmap.Config.ARGB_8888)
+                                        lastGpuPrimaryBitmap = bmp
+                                    }
+                                    plane.buffer.rewind()
+                                    bmp!!.copyPixelsFromBuffer(plane.buffer)
+                                    lastGpuPrimaryWidth = imgW
+                                    lastGpuPrimaryHeight = imgH
+                                    hasReceivedGpuPrimaryFrame = true
+                                    lastGpuMirrorFrameMs = SystemClock.uptimeMillis()
+                                }
+                                if (presentation != null) {
+                                    postMainAsync {
+                                        runCatching { presentation?.dismiss() }
+                                        presentation = null
+                                    }
+                                }
+                                if (!isSurfacePostInFlight.compareAndSet(false, true)) {
+                                    return@setOnImageAvailableListener
+                                }
+                                try {
+                                    val surfaceCanvas = outSurface.lockCanvas(null)
+                                    try {
+                                        synchronized(gpuPrimaryBitmapLock) {
+                                            val safeBmp = lastGpuPrimaryBitmap
+                                            if (safeBmp != null && !safeBmp.isRecycled) {
+                                                if (dualController.isDualModeActive) {
+                                                    val validPrimaryW = minOf(imgW, dualController.getPrimaryPaneWidth().coerceAtLeast(160))
+                                                    dualController.compositeDualFrame(
+                                                        surfaceCanvas = surfaceCanvas,
+                                                        primaryBitmap = safeBmp,
+                                                        primaryValidWidth = validPrimaryW,
+                                                        primaryValidHeight = imgH,
+                                                        isInteracting = isUserInteractingRecently()
+                                                    )
+                                                } else {
+                                                    val srcRect = Rect(0, 0, imgW, imgH)
+                                                    val dstRect = Rect(0, 0, surfaceWidth, surfaceHeight)
+                                                    surfaceCanvas.drawBitmap(safeBmp, srcRect, dstRect, null)
+                                                }
+                                                lastGpuMirrorFrameMs = SystemClock.uptimeMillis()
+                                            }
+                                        }
+                                    } finally {
+                                        outSurface.unlockCanvasAndPost(surfaceCanvas)
+                                    }
+                                } finally {
+                                    isSurfacePostInFlight.set(false)
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {
+                    }
+                } catch (_: Throwable) {
+                } finally {
+                    runCatching { image.close() }
+                }
+            }, bgHandler)
+        }
+    }
+
+    private fun postDualGpuFrameToCarSurface(primaryBmp: Bitmap, validW: Int, validH: Int) {
+        val outSurface = carOutputSurface ?: return
+        if (!isSurfaceReady || !outSurface.isValid) return
+        if (!isSurfacePostInFlight.compareAndSet(false, true)) return
+        getOrCreateSurfacePostHandler().post {
+            try {
+                if (!outSurface.isValid) return@post
+                val surfaceCanvas = outSurface.lockCanvas(null)
+                try {
+                    synchronized(gpuPrimaryBitmapLock) {
+                        val safeBmp = lastGpuPrimaryBitmap ?: primaryBmp
+                        if (!safeBmp.isRecycled) {
+                            dualController.compositeDualFrame(
+                                surfaceCanvas = surfaceCanvas,
+                                primaryBitmap = safeBmp,
+                                primaryValidWidth = lastGpuPrimaryWidth.takeIf { it > 0 } ?: validW,
+                                primaryValidHeight = lastGpuPrimaryHeight.takeIf { it > 0 } ?: validH,
+                                isInteracting = isUserInteractingRecently()
+                            )
+                        }
+                    }
+                } finally {
+                    outSurface.unlockCanvasAndPost(surfaceCanvas)
+                }
+            } catch (_: Throwable) {
+            } finally {
+                isSurfacePostInFlight.set(false)
+            }
+        }
+    }
+
+    private fun dispatchPrimaryBackKey() {
+        val dispId = activePrimaryDisplayId()
+        postMainAsync {
+            val decors = findAnyActivityDecorViewsInProcess(dispId)
+            var handled = false
+            val now = SystemClock.uptimeMillis()
+            for (decor in decors) {
+                try {
+                    val down = android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_BACK, 0)
+                    val up = android.view.KeyEvent(now, now + 15L, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_BACK, 0)
+                    if (decor.dispatchKeyEvent(down) || decor.dispatchKeyEvent(up)) {
+                        handled = true
+                        break
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+            if (!handled && dispId != Display.DEFAULT_DISPLAY) {
+                try {
+                    val appCtx = carContext.applicationContext
+                    val intent = Intent("com.aamaker.action.INJECT_BACK").apply {
+                        setPackage("com.aamaker.app")
+                        putExtra("display_id", dispId)
+                        attachBridgeAuth(appCtx, this)
+                    }
+                    appCtx.sendBroadcast(intent, "com.aamaker.permission.COMMAND_BRIDGE")
+                } catch (_: Throwable) {
+                }
+            }
+            requestCoalescedFrameRender()
+        }
+    }
 
     @Synchronized
     private fun getOrCreateInputExecutor(): java.util.concurrent.ExecutorService {
@@ -156,6 +438,33 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
     private var cachedOpenAppIcon: CarIcon? = null
     private var cachedOpenAppBitmap: Bitmap? = null
+    private var cachedMenuCarIcon: CarIcon? = null
+    private var cachedCollapseCarIcon: CarIcon? = null
+    private var cachedSplitActiveCarIcon: CarIcon? = null
+    private var cachedSplitInactiveCarIcon: CarIcon? = null
+    private var cachedDimActiveCarIcon: CarIcon? = null
+    private var cachedDimInactiveCarIcon: CarIcon? = null
+
+    @Volatile
+    private var isActionStripExpanded: Boolean = false
+    private val autoCollapseActionStripRunnable = Runnable {
+        if (isActionStripExpanded) {
+            isActionStripExpanded = false
+            try {
+                invalidate()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun scheduleAutoCollapseActionStrip(delayMs: Long = 5000L) {
+        mainHandler.removeCallbacks(autoCollapseActionStripRunnable)
+        mainHandler.postDelayed(autoCollapseActionStripRunnable, delayMs)
+    }
+
+    private fun cancelAutoCollapseActionStrip() {
+        mainHandler.removeCallbacks(autoCollapseActionStripRunnable)
+    }
     private val attachedFabTag = "aamaker_bottom_left_open_fab"
     private var projectionWakeLock: PowerManager.WakeLock? = null
     private var cachedPowerManager: PowerManager? = null
@@ -244,6 +553,11 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         lastUserInteractionMs = SystemClock.uptimeMillis()
     }
 
+    private fun isUserInteractingRecently(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        return (now - lastUserInteractionMs) < 3500L || isScrollDragActive
+    }
+
     private val lockScreenMirrorTicker = object : Runnable {
         override fun run() {
             if (!isSurfaceReady) {
@@ -254,16 +568,22 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             val now = SystemClock.uptimeMillis()
             val screenLocked = isPhoneScreenLockedOrOff()
             val isInteractionBoosted = (now - lastUserInteractionMs) < 3500L || isScrollDragActive
-            val vDisplay = virtualDisplay?.display
-            val vDisplayId = vDisplay?.displayId ?: Display.DEFAULT_DISPLAY
-            if (vDisplay != null && vDisplayId != Display.DEFAULT_DISPLAY) {
+            val vDisplay = resolveActivePrimaryDisplay()
+            val vDisplayId = activePrimaryDisplayId()
+            val gpuFresh = !screenLocked &&
+                hasReceivedGpuPrimaryFrame &&
+                lastGpuPrimaryBitmap?.isRecycled == false &&
+                (now - lastGpuMirrorFrameMs) < 900L
+            if (vDisplayId != Display.DEFAULT_DISPLAY) {
                 try {
                     if (screenLocked) {
                         unstopAllWindowRoots(invokeRelayout = false)
+                        forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
                     }
-                    // Skip expensive CPU software Canvas draw on Main Thread when GPU VirtualDisplay is actively pushing frames!
-                    val gpuMirrorFresh = !screenLocked && (now - lastGpuMirrorFrameMs) < 350L
-                    if (!gpuMirrorFresh && !isSurfacePostInFlight.get()) {
+                    // When GPU VirtualDisplay is actively delivering fresh frames (< 900ms),
+                    // let the GPU callback handle posting; if the phone screen turned off and GPU stalled,
+                    // seamlessly fall back to SafeSoftwareCanvas so the car screen never freezes or goes blank!
+                    if (!gpuFresh && !isSurfacePostInFlight.get()) {
                         val t0 = SystemClock.uptimeMillis()
                         renderFrameToCarSurfaceNow(vDisplayId, screenLocked, isInteractionBoosted)
                         drawElapsedMs = (SystemClock.uptimeMillis() - t0).coerceAtLeast(0L)
@@ -273,9 +593,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             }
             if (isSurfaceReady) {
                 val nextDelayMs = when {
-                    !screenLocked && (now - lastGpuMirrorFrameMs) < 350L -> 250L
+                    gpuFresh -> 220L
                     isInteractionBoosted -> (28L + drawElapsedMs / 2L).coerceIn(28L, 65L)
-                    screenLocked -> (38L + drawElapsedMs / 2L).coerceIn(38L, 80L)
+                    screenLocked -> (36L + drawElapsedMs / 2L).coerceIn(36L, 80L)
                     else -> (55L + drawElapsedMs).coerceIn(55L, 140L)
                 }
                 postMainDelayedAsync(nextDelayMs, screenLocked, this)
@@ -287,14 +607,31 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
     private fun requestCoalescedFrameRender() {
         if (!isSurfaceReady) return
-        val vDisplayId = virtualDisplay?.display?.displayId ?: return
+        val vDisplayId = activePrimaryDisplayId()
         if (vDisplayId == Display.DEFAULT_DISPLAY) return
+        val now = SystemClock.uptimeMillis()
+        val screenLocked = isPhoneScreenLockedOrOff()
+        val gpuBmp = lastGpuPrimaryBitmap
+        val gpuFresh = !screenLocked &&
+            hasReceivedGpuPrimaryFrame &&
+            gpuBmp != null &&
+            !gpuBmp.isRecycled &&
+            (now - lastGpuMirrorFrameMs) < 900L
+        if (gpuFresh && gpuBmp != null) {
+            if (dualController.isDualModeActive) {
+                postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
+            }
+            return
+        }
         mainHandler.removeCallbacks(lockScreenMirrorTicker)
         postMainAsync(lockScreenMirrorTicker)
     }
 
-    private fun isPhoneScreenLockedOrOff(): Boolean {
-        return try {
+    @Volatile
+    private var cachedPhoneScreenLockedOrOff: Boolean = false
+
+    private fun updateCachedPhoneScreenLockedState() {
+        try {
             val appCtx = carContext.applicationContext
             val pm = cachedPowerManager
                 ?: (appCtx.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.also { cachedPowerManager = it }
@@ -302,10 +639,13 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 ?: (appCtx.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.also { cachedKeyguardManager = it }
             val interactive = pm?.isInteractive ?: true
             val keyguardLocked = km?.isKeyguardLocked ?: false
-            !interactive || keyguardLocked
+            cachedPhoneScreenLockedOrOff = !interactive || keyguardLocked
         } catch (_: Throwable) {
-            false
         }
+    }
+
+    private fun isPhoneScreenLockedOrOff(): Boolean {
+        return PhoneScreenDimManager.isDimmed || cachedPhoneScreenLockedOrOff
     }
 
     private fun ensurePresentationShowing(vDisplay: Display) {
@@ -332,20 +672,11 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     private fun unstopAllWindowRoots(invokeRelayout: Boolean = false) {
+        // Safe no-op or benign flag reset: never call setWindowStopped(false) directly
+        // which forces scheduleTraversals() onto destroyed hardware renderers when screen is off!
         try {
             ensureReflectionInitialized()
             val wmgInstance = cachedWmgInstance ?: return
-            if (invokeRelayout) {
-                try {
-                    val setStoppedMethod = wmgInstance.javaClass.getDeclaredMethod(
-                        "setStoppedState",
-                        android.os.IBinder::class.java,
-                        Boolean::class.javaPrimitiveType
-                    ).apply { isAccessible = true }
-                    setStoppedMethod.invoke(wmgInstance, null, false)
-                } catch (_: Throwable) {
-                }
-            }
             val rawRoots = cachedWmgRootsField?.get(wmgInstance)
             if (rawRoots is List<*>) {
                 for (root in rawRoots) {
@@ -355,16 +686,6 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         val stoppedField = rootClass.getDeclaredField("mStopped").apply { isAccessible = true }
                         if (stoppedField.getBoolean(root)) {
                             stoppedField.setBoolean(root, false)
-                            if (invokeRelayout) {
-                                try {
-                                    val setWinStopped = rootClass.getDeclaredMethod(
-                                        "setWindowStopped",
-                                        Boolean::class.javaPrimitiveType
-                                    ).apply { isAccessible = true }
-                                    setWinStopped.invoke(root, false)
-                                } catch (_: Throwable) {
-                                }
-                            }
                         }
                     } catch (_: Throwable) {
                     }
@@ -382,8 +703,11 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         if (isSurfacePostInFlight.get()) return
         val outSurface = carOutputSurface ?: return
         if (!outSurface.isValid) return
-        val targetW = surfaceWidth.takeIf { it > 0 } ?: return
-        val targetH = surfaceHeight.takeIf { it > 0 } ?: return
+        val fullCarW = surfaceWidth.takeIf { it > 0 } ?: return
+        val fullCarH = surfaceHeight.takeIf { it > 0 } ?: return
+        val isDual = dualController.isDualModeActive
+        val targetW = if (isDual) dualController.getPrimaryPaneWidth().coerceAtLeast(160) else fullCarW
+        val targetH = fullCarH
 
         val candidateDecors = findAnyActivityDecorViewsInProcess(displayId)
         if (candidateDecors.isEmpty()) {
@@ -396,7 +720,18 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 autoRetryLaunchCount++
                 launchOriginalAppActivity(forceCarDisplay = true)
             }
-            renderLoadingBannerOnSurface(outSurface, targetW, targetH)
+            val gpuBmp = lastGpuPrimaryBitmap
+            if (isDual && gpuBmp != null && !gpuBmp.isRecycled) {
+                postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
+            } else if (!hasReceivedGpuPrimaryFrame && !isDual) {
+                renderLoadingBannerOnSurface(outSurface, targetW, targetH)
+            } else if (isDual) {
+                postDualGpuFrameToCarSurface(
+                    gpuBmp ?: getOrCreateOpenAppBitmap(),
+                    if (gpuBmp != null) lastGpuPrimaryWidth else 0,
+                    if (gpuBmp != null) lastGpuPrimaryHeight else 0
+                )
+            }
             return
         }
 
@@ -487,8 +822,6 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 lastForcedLockedLayoutMs = now
             }
 
-            drawBottomLeftOpenAppButtonOnCanvas(safeCanvas, targetW, targetH)
-
             activeBufferIdx = 1 - bufIdx
             val bitmapToPost = bmp
             if (isSurfacePostInFlight.compareAndSet(false, true)) {
@@ -498,7 +831,17 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         if (currentOut != null && currentOut.isValid && !bitmapToPost.isRecycled) {
                             val surfaceCanvas = currentOut.lockCanvas(null)
                             try {
-                                surfaceCanvas.drawBitmap(bitmapToPost, 0f, 0f, null)
+                                if (isDual) {
+                                    dualController.compositeDualFrame(
+                                        surfaceCanvas = surfaceCanvas,
+                                        primaryBitmap = bitmapToPost,
+                                        primaryValidWidth = targetW,
+                                        primaryValidHeight = targetH,
+                                        isInteracting = isUserInteractingRecently()
+                                    )
+                                } else {
+                                    surfaceCanvas.drawBitmap(bitmapToPost, 0f, 0f, null)
+                                }
                             } finally {
                                 currentOut.unlockCanvasAndPost(surfaceCanvas)
                             }
@@ -538,9 +881,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         cached = Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888)
                         textureViewSampleCache[view] = cached
                     }
-                    if (cached != null) {
-                        view.getBitmap(cached)
-                    }
+                    view.getBitmap(cached)
                 } catch (_: Throwable) {
                 }
             }
@@ -632,25 +973,13 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         strokeWidth = 2f
     }
 
-    private fun drawBottomLeftOpenAppButtonOnCanvas(canvas: Canvas, width: Int, height: Int) {
-        try {
-            val density = (surfaceDpi.toFloat() / 160f).coerceIn(1f, 3f)
-            val btnSize = 38f * density
-            val margin = 14f * density
-            val pad = 8f * density
-            val left = margin
-            val top = height - margin - btnSize
-            val right = left + btnSize
-            val bottom = top + btnSize
-            val rect = RectF(left, top, right, bottom)
-            canvas.drawOval(rect, fabBgPaint)
-            fabStrokePaint.strokeWidth = (1.5f * density).coerceAtLeast(1f)
-            canvas.drawOval(rect, fabStrokePaint)
-            val iconBmp = getOrCreateOpenAppBitmap()
-            val iconDst = RectF(left + pad, top + pad, right - pad, bottom - pad)
-            canvas.drawBitmap(iconBmp, null, iconDst, null)
-        } catch (_: Throwable) {
-        }
+    private fun drawBottomLeftOpenAppButtonOnCanvas(
+        canvas: Canvas,
+        width: Int,
+        height: Int,
+        includeSplitToggle: Boolean = true
+    ) {
+        // Redundant bottom-left button removed per Minimalist Car Screen UI rules
     }
 
     private fun renderLoadingBannerOnSurface(surface: Surface, width: Int, height: Int) {
@@ -722,23 +1051,37 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
         override fun onActivityStarted(activity: Activity) {
             applyLockScreenFlagsToActivity(activity, forceApply = false)
+            if (PhoneScreenDimManager.isDimmed) {
+                PhoneScreenDimManager.applyDimToActivityWindow(activity)
+            }
         }
 
         override fun onActivityResumed(activity: Activity) {
             applyLockScreenFlagsToActivity(activity, forceApply = false)
+            if (PhoneScreenDimManager.isDimmed) {
+                PhoneScreenDimManager.applyDimToActivityWindow(activity)
+            }
             requestCoalescedFrameRender()
         }
 
         override fun onActivityPaused(activity: Activity) {}
 
         override fun onActivityStopped(activity: Activity) {
-            val vDisplayId = virtualDisplay?.display?.displayId ?: Display.DEFAULT_DISPLAY
-            if (isSurfaceReady && vDisplayId != Display.DEFAULT_DISPLAY && isPhoneScreenLockedOrOff()) {
-                postMainAsync {
-                    unstopAllWindowRoots(invokeRelayout = false)
-                    forceResumeActivityRecord(activity)
-                    requestCoalescedFrameRender()
+            try {
+                val vDisplayId = activePrimaryDisplayId()
+                if (isSurfaceReady && vDisplayId != Display.DEFAULT_DISPLAY) {
+                    val isOnCar = isActivityOnCarVirtualDisplay(activity, vDisplayId)
+                    if (isOnCar || isPhoneScreenLockedOrOff()) {
+                        postMainAsync(true) {
+                            unstopAllWindowRoots(invokeRelayout = false)
+                            forceResumeActivityRecord(activity)
+                            requestCoalescedFrameRender()
+                        }
+                    } else {
+                        requestCoalescedFrameRender()
+                    }
                 }
+            } catch (_: Throwable) {
             }
         }
 
@@ -750,42 +1093,74 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
     private val screenLockStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val action = intent?.action ?: return
-            if (action == Intent.ACTION_SCREEN_OFF ||
-                action == Intent.ACTION_USER_PRESENT ||
-                action == Intent.ACTION_SCREEN_ON
-            ) {
-                val vDisplay = virtualDisplay?.display ?: return
-                val vDisplayId = vDisplay.displayId
-                if (!isSurfaceReady || vDisplayId == Display.DEFAULT_DISPLAY) return
-                acquireProjectionWakeLock()
-                unstopAllWindowRoots(invokeRelayout = true)
-                applyLockScreenFlagsToAllProcessActivities(vDisplayId)
-                forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
-                startLockScreenMirrorTicker()
-                requestCoalescedFrameRender()
-
-                postMainDelayedAsync({
-                    if (isSurfaceReady) {
-                        unstopAllWindowRoots(invokeRelayout = false)
-                        forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
-                        val candidates = findAnyActivityDecorViewsInProcess(vDisplayId)
-                        if (candidates.isEmpty()) {
-                            launchOriginalAppActivity(forceCarDisplay = true)
-                        } else {
+            try {
+                val action = intent?.action ?: return
+                if (action == Intent.ACTION_SCREEN_OFF ||
+                    action == Intent.ACTION_USER_PRESENT ||
+                    action == Intent.ACTION_SCREEN_ON
+                ) {
+                    val vDisplayId = activePrimaryDisplayId()
+                    if (!isSurfaceReady || vDisplayId == Display.DEFAULT_DISPLAY) return
+                    acquireProjectionWakeLock()
+                    if (action == Intent.ACTION_SCREEN_OFF) {
+                        cachedPhoneScreenLockedOrOff = true
+                        // Intercept physical Power button / screen timeout while AA is projecting:
+                        // automatically transition into Panel-Off Awake mode so Dual-App GPU VSYNC never freezes!
+                        PhoneScreenDimManager.onPhysicalScreenOffIntercepted(carContext.applicationContext)
+                        if (dualController.isDualModeActive) {
+                            dualController.ensureSecondaryAliveWhenScreenOff()
+                        }
+                        if (isRootShellAllowed()) {
+                            runRootInputCommand("wm dismiss-keyguard; settings put global stay_on_while_plugged_in 7; settings put system screen_brightness_mode 0; settings put system screen_brightness 0")
+                        }
+                    } else {
+                        updateCachedPhoneScreenLockedState()
+                    }
+                    unstopAllWindowRoots(invokeRelayout = false)
+                    forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
+                    applyLockScreenFlagsToAllProcessActivities(vDisplayId)
+                    requestCoalescedFrameRender()
+                    postMainDelayedAsync(150L, true) {
+                        if (isSurfaceReady) {
+                            unstopAllWindowRoots(invokeRelayout = false)
+                            forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
                             requestCoalescedFrameRender()
                         }
                     }
-                }, 220L)
-                postMainDelayedAsync({
-                    if (isSurfaceReady) {
-                        unstopAllWindowRoots(invokeRelayout = false)
-                        forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
-                        requestCoalescedFrameRender()
+                    postMainDelayedAsync(450L, true) {
+                        if (isSurfaceReady) {
+                            unstopAllWindowRoots(invokeRelayout = false)
+                            forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
+                            requestCoalescedFrameRender()
+                        }
                     }
-                }, 650L)
+                }
+            } catch (_: Throwable) {
             }
         }
+    }
+
+    private fun isActivityOnCarVirtualDisplay(activity: Activity, targetDisplayId: Int): Boolean {
+        val actDisplayId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                activity.display?.displayId ?: activity.window?.decorView?.display?.displayId
+            } catch (_: Throwable) {
+                activity.window?.decorView?.display?.displayId
+            }
+        } else {
+            activity.window?.decorView?.display?.displayId
+        }
+
+        if (actDisplayId == Display.DEFAULT_DISPLAY) {
+            return false
+        }
+        if (targetDisplayId > Display.DEFAULT_DISPLAY && actDisplayId == targetDisplayId) {
+            return true
+        }
+        if (actDisplayId != null && actDisplayId > Display.DEFAULT_DISPLAY) {
+            return true
+        }
+        return false
     }
 
     @Suppress("DEPRECATION")
@@ -801,15 +1176,75 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                     win.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 } catch (_: Throwable) {
                 }
+                // Keep the display group awake while Android Auto surface is actively projecting
+                // so the Activity on the VirtualDisplay is never stopped when the phone screen dims/blanks.
+                try {
+                    if (isSurfaceReady) {
+                        win.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        win.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                } catch (_: Throwable) {
+                }
             }
+
+            val targetDisplayId = activePrimaryDisplayId()
+            val isOnCarDisplay = isActivityOnCarVirtualDisplay(activity, targetDisplayId)
+
+            if (!isOnCarDisplay) {
+                // If an Android Auto projection session is actively running, keep showWhenLocked
+                // (without turnScreenOn on Display 0!) so if the user presses the physical Power button,
+                // the phone screen does NOT wake back up by itself, while the Activity stays unstopped.
+                if (isSurfaceReady) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        try {
+                            activity.setShowWhenLocked(true)
+                            activity.setTurnScreenOn(false)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    if (win != null) {
+                        try {
+                            win.clearFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+                            win.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                } else {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        try {
+                            activity.setShowWhenLocked(false)
+                            activity.setTurnScreenOn(false)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    if (win != null) {
+                        try {
+                            win.clearFlags(
+                                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                            )
+                        } catch (_: Throwable) {
+                        }
+                    }
+                    appliedLockFlagsActivities.remove(activity)
+                }
+                if (PhoneScreenDimManager.isDimmed) {
+                    PhoneScreenDimManager.applyDimToActivityWindow(activity)
+                }
+                return
+            }
+
             if (!forceApply && appliedLockFlagsActivities[activity] == true) return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 activity.setShowWhenLocked(true)
+                activity.setTurnScreenOn(false)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 activity.setInheritShowWhenLocked(true)
             }
             if (win != null) {
+                win.clearFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
                 win.addFlags(
                     WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                         WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
@@ -826,40 +1261,16 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         try {
             if (activity.isFinishing || activity.isDestroyed) return
             applyLockScreenFlagsToActivity(activity, forceApply = false)
-            if (isPhoneScreenLockedOrOff()) {
-                val decor = activity.window?.decorView
-                if (decor != null && decor.visibility != View.VISIBLE) {
-                    decor.visibility = View.VISIBLE
-                }
+            val decor = activity.window?.decorView
+            if (decor != null && decor.visibility != View.VISIBLE) {
+                decor.visibility = View.VISIBLE
             }
             try {
-                val mStoppedField = Activity::class.java.getDeclaredField("mStopped").apply { isAccessible = true }
-                if (mStoppedField.getBoolean(activity)) {
-                    mStoppedField.setBoolean(activity, false)
+                val stoppedField = Activity::class.java.getDeclaredField("mStopped").apply { isAccessible = true }
+                if (stoppedField.getBoolean(activity)) {
+                    stoppedField.setBoolean(activity, false)
                 }
             } catch (_: Throwable) {
-            }
-
-            val atClass = Class.forName("android.app.ActivityThread")
-            val currentAt = atClass.getMethod("currentActivityThread").invoke(null)
-            val activitiesField = atClass.getDeclaredField("mActivities").apply { isAccessible = true }
-            val activitiesMap = activitiesField.get(currentAt) as? Map<*, *> ?: return
-            for (record in activitiesMap.values) {
-                if (record == null) continue
-                val actField = record.javaClass.getDeclaredField("activity").apply { isAccessible = true }
-                val act = actField.get(record) as? Activity ?: continue
-                if (act === activity) {
-                    try {
-                        val stoppedField = record.javaClass.getDeclaredField("stopped").apply { isAccessible = true }
-                        stoppedField.setBoolean(record, false)
-                    } catch (_: Throwable) {
-                    }
-                    try {
-                        val hideForNowField = record.javaClass.getDeclaredField("hideForNow").apply { isAccessible = true }
-                        hideForNowField.setBoolean(record, false)
-                    } catch (_: Throwable) {
-                    }
-                }
             }
         } catch (_: Throwable) {
         }
@@ -936,6 +1347,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             }
         }
         acquireProjectionWakeLock()
+        updateCachedPhoneScreenLockedState()
         applyLockScreenFlagsToAllProcessActivities(targetDisplayId)
         startLockScreenMirrorTicker()
     }
@@ -957,6 +1369,32 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             }
             screenLockReceiverRegistered = false
         }
+        try {
+            val atClass = Class.forName("android.app.ActivityThread")
+            val currentAt = atClass.getMethod("currentActivityThread").invoke(null)
+            val activitiesField = atClass.getDeclaredField("mActivities").apply { isAccessible = true }
+            val activitiesMap = activitiesField.get(currentAt) as? Map<*, *> ?: emptyMap<Any, Any>()
+            for (record in activitiesMap.values) {
+                if (record == null) continue
+                val actField = record.javaClass.getDeclaredField("activity").apply { isAccessible = true }
+                val act = actField.get(record) as? Activity ?: continue
+                if (act.isFinishing || act.isDestroyed) continue
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    try { act.setShowWhenLocked(false) } catch (_: Throwable) {}
+                }
+                act.window?.let { w ->
+                    try {
+                        @Suppress("DEPRECATION")
+                        w.clearFlags(
+                            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                        )
+                    } catch (_: Throwable) {}
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        appliedLockFlagsActivities.clear()
         releaseProjectionWakeLock()
     }
 
@@ -1023,63 +1461,109 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         }
     }
 
-    private fun ensureBottomLeftOpenAppOverlay(@Suppress("UNUSED_PARAMETER") displayId: Int) {
-        try {
-            val topDecor = (presentation?.window?.decorView as? FrameLayout) ?: return
-
-            val existing = topDecor.findViewWithTag<View>(attachedFabTag)
-            if (existing != null) {
-                existing.bringToFront()
-                return
+    private fun getOrCreateMenuCarIcon(): CarIcon {
+        cachedMenuCarIcon?.let { return it }
+        return try {
+            val bmp = Bitmap.createBitmap(56, 56, Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#38BDF8")
+                strokeWidth = 4.5f
+                strokeCap = Paint.Cap.ROUND
             }
-
-            val ctx = topDecor.context
-            val density = ctx.resources.displayMetrics.density.coerceAtLeast(1f)
-            val btnSizePx = (38f * density).roundToInt()
-            val marginPx = (14f * density).roundToInt()
-            val padPx = (8f * density).roundToInt()
-
-            val bgDrawable = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#B80F172A"))
-                setStroke((1.5f * density).roundToInt().coerceAtLeast(1), Color.parseColor("#8038BDF8"))
-            }
-
-            val fabView = ImageView(ctx).apply {
-                tag = attachedFabTag
-                background = bgDrawable
-                setImageBitmap(getOrCreateOpenAppBitmap())
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                setPadding(padPx, padPx, padPx, padPx)
-                elevation = 16f * density
-                isClickable = true
-                isFocusable = false
-                setOnClickListener {
-                    isProjectionMode = true
-                    launchOriginalAppActivity(forceCarDisplay = true)
-                    invalidate()
-                }
-            }
-
-            val lp = FrameLayout.LayoutParams(btnSizePx, btnSizePx).apply {
-                gravity = Gravity.BOTTOM or Gravity.LEFT
-                leftMargin = marginPx
-                bottomMargin = marginPx
-            }
-            topDecor.addView(fabView, lp)
-            fabView.bringToFront()
+            c.drawLine(14f, 17f, 42f, 17f, p)
+            c.drawLine(14f, 28f, 42f, 28f, p)
+            c.drawLine(14f, 39f, 42f, 39f, p)
+            CarIcon.Builder(IconCompat.createWithBitmap(bmp))
+                .setTint(CarColor.DEFAULT)
+                .build()
+                .also { cachedMenuCarIcon = it }
         } catch (_: Throwable) {
+            CarIcon.APP_ICON
         }
     }
 
-    private fun isBottomLeftOpenAppHit(x: Float, y: Float): Boolean {
-        val h = surfaceHeight.takeIf { it > 0 } ?: return false
-        val w = surfaceWidth.takeIf { it > 0 } ?: return false
-
-        val maxHitX = minOf(88f, w * 0.12f).coerceAtLeast(64f)
-        val minHitY = h - minOf(88f, h * 0.18f).coerceAtLeast(64f)
-        return x in 0f..maxHitX && y in minHitY..h.toFloat()
+    private fun getOrCreateCollapseCarIcon(): CarIcon {
+        cachedCollapseCarIcon?.let { return it }
+        return try {
+            val bmp = Bitmap.createBitmap(56, 56, Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#94A3B8")
+                strokeWidth = 4.5f
+                strokeCap = Paint.Cap.ROUND
+            }
+            c.drawLine(17f, 17f, 39f, 39f, p)
+            c.drawLine(39f, 17f, 17f, 39f, p)
+            CarIcon.Builder(IconCompat.createWithBitmap(bmp))
+                .setTint(CarColor.DEFAULT)
+                .build()
+                .also { cachedCollapseCarIcon = it }
+        } catch (_: Throwable) {
+            CarIcon.BACK
+        }
     }
+
+    private fun getOrCreateSplitCarIcon(isDualActive: Boolean): CarIcon {
+        if (isDualActive) {
+            cachedSplitActiveCarIcon?.let { return it }
+        } else {
+            cachedSplitInactiveCarIcon?.let { return it }
+        }
+        return try {
+            val bmp = Bitmap.createBitmap(56, 56, Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (isDualActive) Color.parseColor("#38BDF8") else Color.WHITE
+                style = Paint.Style.STROKE
+                strokeWidth = 3.5f
+            }
+            val rect = RectF(10f, 13f, 46f, 43f)
+            c.drawRoundRect(rect, 5f, 5f, p)
+            c.drawLine(28f, 13f, 28f, 43f, p)
+            val icon = CarIcon.Builder(IconCompat.createWithBitmap(bmp))
+                .setTint(CarColor.DEFAULT)
+                .build()
+            if (isDualActive) cachedSplitActiveCarIcon = icon else cachedSplitInactiveCarIcon = icon
+            icon
+        } catch (_: Throwable) {
+            CarIcon.APP_ICON
+        }
+    }
+
+    private fun getOrCreateDimCarIcon(isDimmed: Boolean): CarIcon {
+        if (isDimmed) {
+            cachedDimActiveCarIcon?.let { return it }
+        } else {
+            cachedDimInactiveCarIcon?.let { return it }
+        }
+        return try {
+            val bmp = Bitmap.createBitmap(56, 56, Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (isDimmed) Color.parseColor("#38BDF8") else Color.WHITE
+                style = Paint.Style.STROKE
+                strokeWidth = 3.5f
+            }
+            val rect = RectF(15f, 11f, 41f, 45f)
+            c.drawRoundRect(rect, 5f, 5f, p)
+            p.style = Paint.Style.FILL
+            c.drawCircle(28f, 39f, 2f, p)
+            val icon = CarIcon.Builder(IconCompat.createWithBitmap(bmp))
+                .setTint(CarColor.DEFAULT)
+                .build()
+            if (isDimmed) cachedDimActiveCarIcon = icon else cachedDimInactiveCarIcon = icon
+            icon
+        } catch (_: Throwable) {
+            CarIcon.APP_ICON
+        }
+    }
+
+    private fun ensureBottomLeftOpenAppOverlay(@Suppress("UNUSED_PARAMETER") displayId: Int) {
+        // Redundant bottom-left overlay removed per Minimalist Car Screen UI rules
+    }
+
+    private fun isBottomLeftOpenAppHit(x: Float, y: Float): Boolean = false
 
     private fun currentLang(): String {
         val metaLang = try {
@@ -1179,9 +1663,100 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             else -> "Open App"
         }
 
-        val projectionActionStrip = ActionStrip.Builder()
-            .addAction(Action.PAN)
-            .build()
+        val collapseTitle = when (lang) {
+            "vi" -> "Thu gọn"
+            "zh" -> "收起"
+            "es" -> "Ocultar"
+            "hi" -> "छुपाएं"
+            "ar" -> "إخفاء"
+            "pt" -> "Ocultar"
+            "ru" -> "Скрыть"
+            "ja" -> "閉じる"
+            "de" -> "Einklappen"
+            "fr" -> "Réduire"
+            else -> "Hide"
+        }
+
+        val splitToggleTitle = when (lang) {
+            "vi" -> if (dualController.isDualModeActive) "1 Cửa sổ" else "2 Cửa sổ"
+            "zh" -> if (dualController.isDualModeActive) "单屏" else "分屏"
+            "es" -> if (dualController.isDualModeActive) "1 App" else "Dividir 2"
+            "hi" -> if (dualController.isDualModeActive) "1 ऐप" else "2 स्प्लिट"
+            "ar" -> if (dualController.isDualModeActive) "شاشة واحدة" else "شاشتان"
+            "pt" -> if (dualController.isDualModeActive) "1 App" else "Dividir 2"
+            "ru" -> if (dualController.isDualModeActive) "1 окно" else "2 окна"
+            "ja" -> if (dualController.isDualModeActive) "1画面" else "2画面"
+            "de" -> if (dualController.isDualModeActive) "1 App" else "Geteilt 2"
+            "fr" -> if (dualController.isDualModeActive) "1 Écran" else "2 Écrans"
+            else -> if (dualController.isDualModeActive) "1 App" else "Split 2"
+        }
+
+        val screenOffToggleTitle = when (lang) {
+            "vi" -> if (PhoneScreenDimManager.isDimmed) "Bật ĐT" else "Tắt ĐT"
+            "zh" -> if (PhoneScreenDimManager.isDimmed) "亮屏" else "息屏"
+            "es" -> if (PhoneScreenDimManager.isDimmed) "Activar tel." else "Apagar tel."
+            "hi" -> if (PhoneScreenDimManager.isDimmed) "फोन जगाएं" else "फोन बंद"
+            "ar" -> if (PhoneScreenDimManager.isDimmed) "تشغيل الهاتف" else "إطفاء الهاتف"
+            "pt" -> if (PhoneScreenDimManager.isDimmed) "Ligar Tel" else "Desl. Tel"
+            "ru" -> if (PhoneScreenDimManager.isDimmed) "Вкл. тел" else "Выкл. тел"
+            "ja" -> if (PhoneScreenDimManager.isDimmed) "画面ON" else "画面OFF"
+            "de" -> if (PhoneScreenDimManager.isDimmed) "Tel. an" else "Tel. aus"
+            "fr" -> if (PhoneScreenDimManager.isDimmed) "Allumer tél" else "Éteindre tél"
+            else -> if (PhoneScreenDimManager.isDimmed) "Wake Phone" else "Dim Phone"
+        }
+
+        val projectionActionStrip = ActionStrip.Builder().apply {
+            if (!isActionStripExpanded) {
+                // Tối giản tối đa: chỉ giữ 1 nút icon menu gọn gàng ở mép màn hình khi ở trạng thái nghỉ
+                addAction(
+                    Action.Builder()
+                        .setIcon(getOrCreateMenuCarIcon())
+                        .setOnClickListener {
+                            isActionStripExpanded = true
+                            scheduleAutoCollapseActionStrip()
+                            invalidate()
+                        }
+                        .build()
+                )
+            } else {
+                // Trạng thái mở rộng: hiển thị nút thu gọn + các nút chức năng thiết yếu, tự động ẩn sau 5s
+                addAction(
+                    Action.Builder()
+                        .setIcon(getOrCreateCollapseCarIcon())
+                        .setTitle(collapseTitle)
+                        .setOnClickListener {
+                            isActionStripExpanded = false
+                            cancelAutoCollapseActionStrip()
+                            invalidate()
+                        }
+                        .build()
+                )
+                addAction(
+                    Action.Builder()
+                        .setIcon(getOrCreateSplitCarIcon(dualController.isDualModeActive))
+                        .setTitle(splitToggleTitle)
+                        .setOnClickListener {
+                            dualController.toggleDualMode()
+                            isActionStripExpanded = false
+                            cancelAutoCollapseActionStrip()
+                            invalidate()
+                        }
+                        .build()
+                )
+                addAction(
+                    Action.Builder()
+                        .setIcon(getOrCreateDimCarIcon(PhoneScreenDimManager.isDimmed))
+                        .setTitle(screenOffToggleTitle)
+                        .setOnClickListener {
+                            PhoneScreenDimManager.toggleDim(carContext.applicationContext)
+                            isActionStripExpanded = false
+                            cancelAutoCollapseActionStrip()
+                            invalidate()
+                        }
+                        .build()
+                )
+            }
+        }.build()
 
         val mapActionStrip = ActionStrip.Builder()
             .addAction(Action.PAN)
@@ -1355,6 +1930,23 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         finishActiveScrollDragIfNeeded()
     }
 
+    private fun cancelActiveScrollDragIfNeeded() {
+        if (!isScrollDragActive) return
+        isScrollDragActive = false
+        val displayId = scrollDisplayId
+        if (displayId == Display.DEFAULT_DISPLAY) return
+        val now = SystemClock.uptimeMillis()
+        dispatchMotionEventToDisplayViews(
+            displayId = displayId,
+            downTime = scrollDownTime,
+            eventTime = now,
+            action = MotionEvent.ACTION_CANCEL,
+            rawX = scrollCurX,
+            rawY = scrollCurY
+        )
+        requestCoalescedFrameRender()
+    }
+
     private fun finishActiveScrollDragIfNeeded() {
         if (!isScrollDragActive) return
         isScrollDragActive = false
@@ -1373,27 +1965,83 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     override fun onClick(x: Float, y: Float) {
-        val displayId = virtualDisplay?.display?.displayId ?: return
+        val displayId = activePrimaryDisplayId()
         if (displayId == Display.DEFAULT_DISPLAY) return
         markUserInteraction()
+        lastScrollFocusX = x
         mainHandler.removeCallbacks(finishScrollDragRunnable)
-        finishActiveScrollDragIfNeeded()
-        if (isBottomLeftOpenAppHit(x, y)) {
-            isProjectionMode = true
-            launchOriginalAppActivity(forceCarDisplay = true)
+
+        if (isActionStripExpanded) {
+            isActionStripExpanded = false
+            cancelAutoCollapseActionStrip()
             invalidate()
+        }
+
+        // 1. Dual-window isolation: completely decouple secondary pane from primary display
+        if (dualController.isDualModeActive) {
+            if (dualController.isModalOrMenuOpen()) {
+                cancelActiveScrollDragIfNeeded()
+                dualController.handleCarClick(x, y, onSendPrimaryBack = { dispatchPrimaryBackKey() })
+                return
+            }
+
+            val isSecSide = dualController.isCarPointOnSecondarySide(x, y)
+            if (isSecSide) {
+                // User touched the secondary pane: cancel any stray drag on the primary display
+                // so the primary app NEVER gets an accidental ACTION_UP tap!
+                cancelActiveScrollDragIfNeeded()
+                isLastInteractionOnSecondary = true
+                dualController.handleCarClick(x, y, onSendPrimaryBack = { dispatchPrimaryBackKey() })
+                // Under NO circumstances allow secondary pane clicks to fall through to the primary display!
+                return
+            }
+        }
+
+        // 2. Primary pane click
+        isLastInteractionOnSecondary = false
+        finishActiveScrollDragIfNeeded()
+        dualController.cancelActiveSecondaryScroll()
+
+        if (dualController.handleCarClick(x, y, onSendPrimaryBack = { dispatchPrimaryBackKey() })) {
             return
         }
-        ensureBottomLeftOpenAppOverlay(displayId)
-        injectTapOnVirtualDisplay(displayId, x, y)
+        val (primaryX, primaryY) = dualController.mapCarPointToPrimaryLocal(x, y)
+        injectTapOnVirtualDisplay(displayId, primaryX, primaryY)
     }
 
     override fun onScroll(distanceX: Float, distanceY: Float) {
-        val displayId = virtualDisplay?.display?.displayId ?: return
+        val displayId = activePrimaryDisplayId()
         if (displayId == Display.DEFAULT_DISPLAY) return
         markUserInteraction()
 
-        val w = (surfaceWidth.takeIf { it > 0 } ?: 1280).toFloat()
+        if (isActionStripExpanded) {
+            isActionStripExpanded = false
+            cancelAutoCollapseActionStrip()
+            invalidate()
+        }
+
+        if (dualController.isDualModeActive) {
+            val targetSecondary = if (lastScrollFocusX >= 0f) {
+                dualController.isCarPointOnSecondarySide(lastScrollFocusX, (surfaceHeight.takeIf { it > 0 } ?: 720) * 0.5f)
+            } else {
+                isLastInteractionOnSecondary
+            }
+
+            if (targetSecondary) {
+                // Secondary pane scroll: cancel any primary drag, route strictly to secondary
+                cancelActiveScrollDragIfNeeded()
+                val focusX = if (lastScrollFocusX >= 0f) lastScrollFocusX else dualController.getSecondaryPaneRect().centerX().toFloat()
+                dualController.handleSecondaryScrollIfTargeted(focusX, distanceX, distanceY)
+                return
+            }
+        }
+
+        val activePrimaryW = if (dualController.isDualModeActive) {
+            dualController.getPrimaryPaneWidth().takeIf { it > 0 } ?: 640
+        } else {
+            surfaceWidth.takeIf { it > 0 } ?: 1280
+        }
+        val w = activePrimaryW.toFloat()
         val h = (surfaceHeight.takeIf { it > 0 } ?: 720).toFloat()
         val cx = w * 0.5f
         val cy = h * 0.5f
@@ -1485,18 +2133,29 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
-        val displayId = virtualDisplay?.display?.displayId ?: return
+        val displayId = activePrimaryDisplayId()
         if (displayId == Display.DEFAULT_DISPLAY) return
         markUserInteraction()
-        if (focusX > 0f && focusY > 0f && scaleFactor == 2.0f) {
-
-            injectTapOnVirtualDisplay(displayId, focusX, focusY)
+        if (isActionStripExpanded) {
+            isActionStripExpanded = false
+            cancelAutoCollapseActionStrip()
+            invalidate()
+        }
+        if (focusX > 0f && focusY > 0f) {
+            lastScrollFocusX = focusX
+            if (dualController.isDualModeActive) {
+                isLastInteractionOnSecondary = dualController.isCarPointOnSecondarySide(focusX, focusY)
+            }
+            if (scaleFactor == 2.0f) {
+                onClick(focusX, focusY)
+            }
         }
     }
 
     private fun findTargetDecorViewsOnDisplay(displayId: Int): List<View> {
         ensureReflectionInitialized()
         val result = ArrayList<View>(4)
+        val phoneLocked = isPhoneScreenLockedOrOff()
         try {
             val wmgInstance = cachedWmgInstance
             val rawViews = if (wmgInstance != null) cachedWmgViewsField?.get(wmgInstance) else null
@@ -1504,11 +2163,14 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 for (item in rawViews) {
                     val view = item as? View ?: continue
                     val isMirrorPres = view.tag == AppMirrorPresentation.PRESENTATION_ROOT_TAG
-                    if (view.visibility == View.VISIBLE &&
+                    if ((view.visibility == View.VISIBLE || phoneLocked) &&
                         view.isAttachedToWindow &&
                         view.display?.displayId == displayId &&
                         !isMirrorPres
                     ) {
+                        if (view.visibility != View.VISIBLE) {
+                            view.visibility = View.VISIBLE
+                        }
                         result.add(view)
                     }
                 }
@@ -1526,7 +2188,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         val actField = record.javaClass.getDeclaredField("activity").apply { isAccessible = true }
                         val act = actField.get(record) as? Activity ?: continue
                         val decor = act.window?.decorView ?: continue
-                        if (decor.visibility == View.VISIBLE && decor.display?.displayId == displayId) {
+                        if ((decor.visibility == View.VISIBLE || phoneLocked) && decor.display?.displayId == displayId) {
+                            if (decor.visibility != View.VISIBLE) {
+                                decor.visibility = View.VISIBLE
+                            }
                             result.add(decor)
                         }
                     }
@@ -1557,6 +2222,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         (view.visibility == View.VISIBLE || phoneLocked) &&
                         view.display?.displayId == preferredDisplayId
                     ) {
+                        if (view.visibility != View.VISIBLE) {
+                            view.visibility = View.VISIBLE
+                        }
                         candidates.add(view)
                     }
                 }
@@ -1566,10 +2234,13 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         val isMirrorPres = view.tag == AppMirrorPresentation.PRESENTATION_ROOT_TAG
                         if (!isMirrorPres &&
                             view.isAttachedToWindow &&
-                            view.visibility == View.VISIBLE &&
+                            (view.visibility == View.VISIBLE || phoneLocked) &&
                             view.width > 0 &&
                             view.height > 0
                         ) {
+                            if (view.visibility != View.VISIBLE) {
+                                view.visibility = View.VISIBLE
+                            }
                             candidates.add(view)
                         }
                     }
@@ -1590,8 +2261,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         if (act.isFinishing || act.isDestroyed) continue
                         if (act.javaClass.name.contains("CarAppPermissionActivity")) continue
                         val decor = act.window?.decorView ?: continue
-                        if (!decor.isAttachedToWindow) continue
-                        if (decor.visibility != View.VISIBLE && !phoneLocked) continue
+                        if (decor.visibility != View.VISIBLE) {
+                            decor.visibility = View.VISIBLE
+                        }
                         if (decor !in candidates) {
                             candidates.add(decor)
                         }
@@ -1627,10 +2299,16 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             unstopAllWindowRoots(invokeRelayout = false)
         }
 
+        val effectivePaneW = if (dualController.isDualModeActive) {
+            dualController.getPrimaryPaneWidth().takeIf { it > 0 } ?: surfaceWidth
+        } else {
+            surfaceWidth
+        }
+
         for (decor in decorViews) {
             try {
-                val scaleX = if (surfaceWidth > 0 && decor.width > 0 && decor.width != surfaceWidth) {
-                    decor.width.toFloat() / surfaceWidth.toFloat()
+                val scaleX = if (effectivePaneW > 0 && decor.width > 0 && decor.width != effectivePaneW) {
+                    decor.width.toFloat() / effectivePaneW.toFloat()
                 } else {
                     1f
                 }
@@ -1933,8 +2611,8 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             }
 
             if (launchIntent != null) {
-                val targetDisplay = if (forceCarDisplay) virtualDisplay?.display else null
-                val targetDisplayId = targetDisplay?.displayId ?: Display.DEFAULT_DISPLAY
+                val targetDisplay = if (forceCarDisplay) resolveActivePrimaryDisplay() else null
+                val targetDisplayId = if (forceCarDisplay) activePrimaryDisplayId() else Display.DEFAULT_DISPLAY
 
                 if (targetDisplay != null &&
                     targetDisplayId != Display.DEFAULT_DISPLAY &&
@@ -2108,12 +2786,17 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         postMainDelayedAsync({
             try {
                 if (!isSurfaceReady) return@postMainDelayedAsync
-                if (isPhoneScreenLockedOrOff()) {
+                if (isPhoneScreenLockedOrOff() || dualController.isDualModeActive) {
                     unstopAllWindowRoots(invokeRelayout = false)
                 }
                 applyLockScreenFlagsToAllProcessActivities(displayId)
+                val targetDecors = findTargetDecorViewsOnDisplay(displayId)
+                if (targetDecors.isNotEmpty()) {
+                    runCatching { presentation?.dismiss() }
+                    presentation = null
+                }
                 requestCoalescedFrameRender()
-                if (findAnyActivityDecorViewsInProcess(displayId).isEmpty() && attempt < 15 && isSurfaceReady) {
+                if (targetDecors.isEmpty() && attempt < 15 && isSurfaceReady) {
                     schedulePresentationDismissWhenActivityReady(displayId, attempt + 1)
                 }
             } catch (_: Throwable) {
@@ -2129,6 +2812,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         if (width <= 0 || height <= 0) return
 
         isSurfaceReady = true
+        hasReceivedGpuPrimaryFrame = false
         surfaceWidth = width
         surfaceHeight = height
         surfaceDpi = dpi.takeIf { it > 0 } ?: 160
@@ -2136,104 +2820,94 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         surfaceAvailableTimestampMs = SystemClock.uptimeMillis()
         autoRetryLaunchCount = 0
 
+        PhoneScreenDimManager.initBridge(
+            tokenProvider = { getBridgeAuthToken() },
+            invoker = { method, bundle -> dualController.sendBridgeCommand(method, bundle) }
+        )
+        // Notify privileged server that an AA session is active so DisplayGroup VSYNC is kept alive
+        // and any physical Power button press is immediately converted into Panel-Off Awake mode.
+        PhoneScreenDimManager.notifySessionState(carContext.applicationContext, active = true)
+
         renderLoadingBannerOnSurface(surface, width, height)
 
         try {
             val displayManager = carContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             virtualDisplay?.release()
+            virtualDisplay = null
+            privilegedPrimaryDisplayId = Display.INVALID_DISPLAY
             virtualDisplayImageReader?.close()
 
-            val bgHandler = getOrCreateSurfacePostHandler()
-            var gpuCopyBitmap: Bitmap? = null
-            val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2).apply {
-                setOnImageAvailableListener({ r ->
-                    val image = try {
-                        r.acquireLatestImage()
-                    } catch (_: Throwable) {
-                        null
-                    } ?: return@setOnImageAvailableListener
-                    try {
-                        val outSurface = carOutputSurface
-                        if (!isSurfaceReady || outSurface == null || !outSurface.isValid || isPhoneScreenLockedOrOff()) {
-                            return@setOnImageAvailableListener
-                        }
-                        if (findTargetDecorViewsOnDisplay(virtualDisplay?.display?.displayId ?: Display.DEFAULT_DISPLAY).isEmpty()) {
-                            return@setOnImageAvailableListener
-                        }
-                        if (!isSurfacePostInFlight.compareAndSet(false, true)) {
-                            return@setOnImageAvailableListener
-                        }
-                        try {
-                            val planes = image.planes
-                            if (planes.isNotEmpty()) {
-                                val plane = planes[0]
-                                val pixelStride = plane.pixelStride
-                                val rowStride = plane.rowStride
-                                val rowPadding = rowStride - pixelStride * width
-                                val strideWidth = width + (if (pixelStride > 0) rowPadding / pixelStride else 0)
-                                if (strideWidth >= width && height > 0) {
-                                    var bmp = gpuCopyBitmap
-                                    if (bmp == null || bmp.isRecycled || bmp.width != strideWidth || bmp.height != height) {
-                                        bmp?.recycle()
-                                        bmp = Bitmap.createBitmap(strideWidth, height, Bitmap.Config.ARGB_8888)
-                                        gpuCopyBitmap = bmp
-                                    }
-                                    plane.buffer.rewind()
-                                    bmp.copyPixelsFromBuffer(plane.buffer)
-                                    val surfaceCanvas = outSurface.lockCanvas(null)
-                                    try {
-                                        val srcRect = Rect(0, 0, width, height)
-                                        val dstRect = Rect(0, 0, width, height)
-                                        surfaceCanvas.drawBitmap(bmp, srcRect, dstRect, null)
-                                        drawBottomLeftOpenAppButtonOnCanvas(surfaceCanvas, width, height)
-                                        lastGpuMirrorFrameMs = SystemClock.uptimeMillis()
-                                    } finally {
-                                        outSurface.unlockCanvasAndPost(surfaceCanvas)
-                                    }
-                                }
-                            }
-                        } finally {
-                            isSurfacePostInFlight.set(false)
-                        }
-                    } catch (_: Throwable) {
-                    } finally {
-                        runCatching { image.close() }
-                    }
-                }, bgHandler)
+            dualController.prepareInitialDimensions(width, height, surfaceDpi)
+            val initPrimaryW = if (dualController.isDualModeActive) {
+                dualController.getPrimaryPaneWidth().coerceAtLeast(160)
+            } else {
+                width
             }
-            virtualDisplayImageReader = reader
+            val initPrimaryDpi = if (dualController.isDualModeActive) {
+                dualController.computeAdaptivePaneDpi(initPrimaryW)
+            } else {
+                surfaceDpi
+            }
 
+            val reader = createPrimaryImageReader(initPrimaryW, height)
+            virtualDisplayImageReader = reader
+            primaryDisplayCurrentW = initPrimaryW
+            primaryDisplayCurrentH = height
+            primaryDisplayCurrentDpi = initPrimaryDpi
+
+            // Create local in-process VirtualDisplay immediately (< 2ms on UI thread) so onSurfaceAvailable
+            // NEVER blocks the main thread on ContentProvider/Shizuku IPC (which causes Android Auto 5s ANR)!
             val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
+                (1 shl 6) // VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
 
             virtualDisplay = try {
                 displayManager.createVirtualDisplay(
                     "AAMakerVirtualDisplay_${carContext.packageName}",
-                    width,
+                    initPrimaryW,
                     height,
-                    dpi,
+                    initPrimaryDpi,
                     reader.surface,
                     flags
                 )
             } catch (_: SecurityException) {
-                displayManager.createVirtualDisplay(
-                    "AAMakerVirtualDisplay_${carContext.packageName}",
-                    width,
-                    height,
-                    dpi,
-                    reader.surface,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-                )
+                try {
+                    displayManager.createVirtualDisplay(
+                        "AAMakerVirtualDisplay_${carContext.packageName}",
+                        initPrimaryW,
+                        height,
+                        initPrimaryDpi,
+                        reader.surface,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
+                    )
+                } catch (_: SecurityException) {
+                    displayManager.createVirtualDisplay(
+                        "AAMakerVirtualDisplay_${carContext.packageName}",
+                        initPrimaryW,
+                        height,
+                        initPrimaryDpi,
+                        reader.surface,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
+                    )
+                }
             }
 
-            virtualDisplay?.display?.let { vDisplay ->
+            resolveActivePrimaryDisplay()?.let { vDisplay ->
                 registerLockScreenSupport(vDisplay.displayId)
                 presentation?.dismiss()
                 presentation = AppMirrorPresentation(carContext, vDisplay).also { it.show() }
-                ensureBottomLeftOpenAppOverlay(vDisplay.displayId)
+            } ?: run {
+                val activeId = activePrimaryDisplayId()
+                if (activeId > Display.DEFAULT_DISPLAY) {
+                    registerLockScreenSupport(activeId)
+                }
             }
+
+            dualController.onCarSurfaceReady(width, height, surfaceDpi, primaryAlreadySized = true)
 
             if (!hasAutoLaunched) {
                 hasAutoLaunched = true
@@ -2251,16 +2925,32 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
     override fun onSurfaceDestroyed(surfaceContainer: SurfaceContainer) {
         isSurfaceReady = false
+        hasReceivedGpuPrimaryFrame = false
         hasAutoLaunched = false
         isScrollDragActive = false
         mainHandler.removeCallbacks(finishScrollDragRunnable)
+        cancelAutoCollapseActionStrip()
+        isActionStripExpanded = false
         carOutputSurface = null
         autoRetryLaunchCount = 0
         isSurfacePostInFlight.set(false)
         unregisterLockScreenSupport()
         try {
+            PhoneScreenDimManager.restorePhoneScreen(carContext.applicationContext, keepSessionAwake = false)
+        } catch (_: Throwable) {
+        }
+        try {
             presentation?.dismiss()
             presentation = null
+            if (privilegedPrimaryDisplayId > Display.DEFAULT_DISPLAY) {
+                privilegedPrimaryDisplayId = Display.INVALID_DISPLAY
+                Thread {
+                    runCatching {
+                        val relReq = Bundle().apply { putString("slot", "primary") }
+                        dualController.sendBridgeCommand("release_secondary_display", relReq)
+                    }
+                }.start()
+            }
             virtualDisplay?.release()
             virtualDisplay = null
             virtualDisplayImageReader?.close()
@@ -2282,6 +2972,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             surfaceViewCopyInFlight.clear()
             latestSampledSurfaceBitmap = null
             lastGpuMirrorFrameMs = 0L
+            lastGpuPrimaryBitmap = null
+            lastGpuPrimaryWidth = 0
+            lastGpuPrimaryHeight = 0
+            dualController.destroy()
             runCatching { persistentSuWriter?.close() }
             runCatching { persistentSuProcess?.destroy() }
             persistentSuWriter = null
@@ -2555,10 +3249,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             super.onCreate(savedInstanceState)
             window?.addFlags(
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                     WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON or
                     WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
             )
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             window?.decorView?.tag = PRESENTATION_ROOT_TAG
             val root = FrameLayout(context).apply {
                 setBackgroundColor(Color.parseColor("#0F172A"))
