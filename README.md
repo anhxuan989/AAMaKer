@@ -24,10 +24,12 @@
 
 ## ✨ Key Features
 
-### 🛠️ 4 Versatile Patching & Processing Modes
+### 🛠️ 6 Versatile Patching & Processing Strategies
 - **Parked / Game Mode (Default):** Runs the app's native UI directly on Android Auto (ideal for Android 15+), automatically merges Split APKs into a single standalone APK, and injects `CAR_LAUNCHER` & game mode declarations.
 - **Universal AA Wrapper:** Converts any standard Android app into an Android Auto compatible app by injecting a lightweight Car App Runtime DEX (`VirtualDisplay` projection + interactive touch forwarding).
-- **Unlock Existing AA App:** Fixes `automotive_app_desc.xml` metadata and clones/renames the package name to bypass package blacklists on apps that already include Android Auto support.
+- **Dual-Window / Split-Screen Mode (Experimental):** Generates a dual-app launcher on Android Auto running two applications side-by-side simultaneously (e.g., Navigation + Video/Media). Supports pre-configured split ratios (50:50, 60:40, 70:30, 40:60), dynamic in-car secondary app selection, audio focus mixing, on-screen density adjustment, and pane swapping. *(Note: This feature is experimental and operates best on **rooted devices** with the **phone kept awake / not in sleep mode** to prevent Android background task throttling).*
+- **AnyAuto Shizuku Companion:** Generates a lightweight, dedicated Car Launcher companion APK that projects target apps onto Android Auto via Shizuku-privileged trusted `VirtualDisplay` at 60 FPS GPU acceleration—**without modifying or re-signing the original application**, preserving DRM, biometric login, and original signatures intact.
+- **Unlock Existing AA App:** Fixes `automotive_app_desc.xml` metadata and clones/renames the package name to bypass package blacklists on third-party apps that already include Android Auto support.
 - **Direct Install (No Patch):** Preserves the original APK/Split APKs and original digital signature while spoofing the installer source as Google Play Store (`com.android.vending`).
 
 ### 📦 Advanced APK & Bundle Engine
@@ -38,7 +40,7 @@
   - **Use While Driving (`distractionOptimized`):** Injects distraction-optimized flags across activities so apps remain usable while the vehicle is in motion.
   - **Gamepad Support:** Injects hardware controller compatibility flags and relaxes mandatory hardware `uses-feature` constraints.
   - **Widescreen & Orientation Unlock:** Unlocks screen rotation and full-screen aspect ratios for car head units.
-  - **Dual-Window & Split-Screen Projection:** Run two apps simultaneously side-by-side on your car screen (e.g., Navigation + Video/Media), featuring customizable split ratios (50:50, 60:40, 70:30), left/right pane swapping, on-screen density adjustment, independent back navigation, audio routing toggle, and phone screen dimming.
+  - **Dual-Window & Split-Screen Projection (Experimental):** Run two apps simultaneously side-by-side on your car screen (e.g., Navigation + Video/Media), featuring customizable split ratios (50:50, 60:40, 70:30), left/right pane swapping, on-screen density adjustment, independent back navigation, audio routing toggle, and phone screen dimming. *(Works best on rooted devices with the phone awake).*
   - **Touch Bridge:** Built-in Accessibility Touch Bridge service and optional Root shell (`su`) touch injection for Universal AA Wrapper apps.
 
 ### 🚀 Multi-Mode Google Play Source Installer
@@ -115,7 +117,9 @@ Once an app is selected, you will be taken to the **Patch & Install** tab:
 
 1. **Select a Patch Mode (`1. Patch Mode`):**
    - **Parked / Game Mode:** Best for running standard apps/games with their native interface on Android 15+ or compatible head units.
-   - **Universal AA Wrapper:** Best for projecting standard apps onto the car screen via VirtualDisplay with touch input.
+   - **Universal AA Wrapper:** Best for projecting standard apps onto the car screen via VirtualDisplay with interactive touch input.
+   - **Dual-Window Mode (Experimental):** Best for running two apps side-by-side on your car screen with customizable split ratios (50:50 / 60:40 / 70:30), pane swapping, and audio mixing. *(Optimal on rooted devices with the phone awake to prevent OS background suspension).*
+   - **AnyAuto Companion (Shizuku):** Best for launching apps at 60 FPS without modifying the target APK, preserving original signatures, Play Integrity, and biometric login.
    - **Unlock Existing AA App:** Best for third-party AA apps that are blocked by Android Auto when sideloaded.
    - **Direct Install (No Patch):** Best when you have an already-patched APK or an original AA app and just need to install it with the Google Play Store installer flag.
 2. **Customize Identity (Optional):**
@@ -123,7 +127,9 @@ Once an app is selected, you will be taken to the **Patch & Install** tab:
    - **Car Screen Name:** Set a custom label for the app on your car display.
 3. **Configure Compatibility & Capabilities:**
    - Toggle **Compatibility Options** such as *Parked Game Mode*, *Use While Driving*, *Gamepad*, and *Widescreen / Rotate*.
+   - For *Dual-Window Mode* or *Universal AA Wrapper*, configure **Dual-Window Settings** (pick secondary target app, default split ratio, audio mixing, and auto-start) and **Touch Bridge** preferences.
    - For *Unlock Existing AA App* or *Universal AA Wrapper*, select the **AA Capabilities** (*Full Screen Projection*, *Car Templates*) and **Launcher Category** (*Navigation*, *IoT*, *Media*, or *POI*).
+   - For *AnyAuto Companion (Shizuku)*, the engine automatically packages a dedicated companion app powered by Shizuku's privileged display server without altering target binaries.
 
 ### Step 3: Select Install Method & Execute
 1. Under **`2. Install Method (Play Store Spoof)`**, select your preferred installer:
@@ -142,9 +148,10 @@ Once an app is selected, you will be taken to the **Patch & Install** tab:
 | Module | Description |
 | :--- | :--- |
 | `:app` | Jetpack Compose UI, `MainViewModel`, app discovery repository, 11-language localization, and `AAMakerTouchBridgeService` (Accessibility touch injector). |
-| `:core-patcher` | Binary `AndroidManifest.xml` & `resources.arsc` patcher, Split APK / Bundle merger (`.apks`/`.xapk`), DEX injector, and V1/V2/V3 APK signer engine. |
+| `:core-patcher` | Binary `AndroidManifest.xml` & `resources.arsc` patcher, Split APK / Bundle merger (`.apks`/`.xapk`), DEX injector, AnyAuto companion engine, and V1/V2/V3 APK signer. |
 | `:core-installer` | Multi-mode installer supporting Shizuku (`UID 2000`), Root (`libsu`), LSPosed status detection, and standard `PackageInstaller` sessions. |
-| `:aa-stub-runtime` | Lightweight runtime stub (`AAMakerCarAppService`) injected into target APKs for Universal AA Wrapper projection and touch forwarding. |
+| `:aa-stub-runtime` | Lightweight runtime stub (`AAMakerCarAppService`) and dual-window compositor injected into target APKs for Universal AA Wrapper and split-screen projection. |
+| `:anyauto-runtime` | Dedicated Car App companion runtime template using Shizuku privileged VirtualDisplay projection, touch bridge, and floating navigation controls. |
 | `:xposed-hook` | LSPosed/Xposed module (`GearheadXposedHook`) hooking Android Auto and Google Play Services for install-source spoofing and driving sensor bypass. |
 
 ---
