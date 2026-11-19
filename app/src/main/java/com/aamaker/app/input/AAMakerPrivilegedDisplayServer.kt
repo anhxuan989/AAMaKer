@@ -319,10 +319,10 @@ object AAMakerPrivilegedDisplayServer {
                             settleUntilMs = SystemClock.uptimeMillis() + WAKE_SETTLE_MS
                             wakeUpSystemInternal()
                             setPhysicalPanelPower(off = true)
+                            dismissKeyguardInternal()
+                            relaunchTrackedAppsOnVirtualDisplays()
                         }
-                        dismissKeyguardInternal()
                         ensureHostedVirtualDisplaysPoweredOn()
-                        relaunchTrackedAppsOnVirtualDisplays()
                         enforceDesiredState()
                         scheduleWatchLoop()
                         val d = dm?.getDisplay(Display.DEFAULT_DISPLAY)
@@ -623,8 +623,11 @@ object AAMakerPrivilegedDisplayServer {
             for ((dispId, target) in activeRelaunchTargets) {
                 val (pkgName, clsName) = target
                 if (dispId <= Display.DEFAULT_DISPLAY || pkgName.isBlank() || clsName.isBlank()) continue
-                val stillHosted = hostedDisplays.values.any { it.virtualDisplay.display?.displayId == dispId }
-                if (!stillHosted) continue
+                val hostedEntry = hostedDisplays.values.firstOrNull { it.virtualDisplay.display?.displayId == dispId }
+                    ?: continue
+                // Never relaunch the primary app (e.g. ViTV / YouTube) via startActivity when screen turns off,
+                // as delivering a new launcher Intent interrupts active MediaCodec/ExoPlayer video streams!
+                if (hostedEntry.sessionKey.endsWith("_primary")) continue
                 try {
                     val component = ComponentName(pkgName, clsName)
                     val intent = Intent(Intent.ACTION_MAIN)
@@ -665,7 +668,22 @@ object AAMakerPrivilegedDisplayServer {
 
         private fun setPhysicalPanelPower(off: Boolean): Boolean {
             ensureDisplayPowerReflection()
-            // 1. Primary path: IDisplayManager.requestDisplayPower (Android 12–17+)
+            // 1. Primary path: SurfaceControl.setDisplayPowerMode (direct SurfaceFlinger/HWC panel off)
+            // Powers off ONLY the physical OLED/LCD hardware without notifying ActivityTaskManagerService
+            // so Display 0 stays STATE_ON logically and media players never receive onPause/onStop!
+            val setModeMethod = setDisplayPowerModeMethod
+            if (setModeMethod != null) {
+                try {
+                    val token = resolveInternalDisplayToken()
+                    if (token != null) {
+                        setModeMethod.invoke(null, token, if (off) POWER_MODE_OFF else POWER_MODE_NORMAL)
+                        return true
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+
+            // 2. Fallback path: IDisplayManager.requestDisplayPower (Android 12–17+)
             val idm = idmInstance
             val reqMethod = requestDisplayPowerMethod
             if (idm != null && reqMethod != null) {
@@ -678,19 +696,6 @@ object AAMakerPrivilegedDisplayServer {
                     }
                     reqMethod.invoke(idm, Display.DEFAULT_DISPLAY, arg)
                     return true
-                } catch (_: Throwable) {
-                }
-            }
-
-            // 2. Fallback path: SurfaceControl.setDisplayPowerMode (Android 10–14)
-            val setModeMethod = setDisplayPowerModeMethod
-            if (setModeMethod != null) {
-                try {
-                    val token = resolveInternalDisplayToken()
-                    if (token != null) {
-                        setModeMethod.invoke(null, token, if (off) POWER_MODE_OFF else POWER_MODE_NORMAL)
-                        return true
-                    }
                 } catch (_: Throwable) {
                 }
             }
@@ -998,9 +1003,7 @@ object AAMakerPrivilegedDisplayServer {
                 .setComponent(component)
                 .addFlags(
                     Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                        Intent.FLAG_ACTIVITY_MULTIPLE_TASK
                 )
             val options = ActivityOptions.makeBasic().apply {
                 setLaunchDisplayId(displayId)
@@ -1012,6 +1015,10 @@ object AAMakerPrivilegedDisplayServer {
                 } else {
                     ActivityManager::class.java.getMethod("getService").invoke(null)
                 } ?: return false
+
+                // If pkgName (e.g., Google Maps singleTask) is already running on Display 0 or another display,
+                // move its existing root task directly onto displayId so Android doesn't silently resume it on Display 0!
+                tryMoveExistingTaskToDisplay(atm, pkgName, displayId)
 
                 for (m in atm.javaClass.methods) {
                     if (m.name != "startActivity") continue
@@ -1026,11 +1033,65 @@ object AAMakerPrivilegedDisplayServer {
                         else -> continue
                     }
                     val res = (m.invoke(atm, *args) as? Int) ?: -1
-                    if (res >= 0) return true
+                    if (res >= 0) {
+                        tryMoveExistingTaskToDisplay(atm, pkgName, displayId)
+                        return true
+                    }
                 }
                 false
             } catch (_: Throwable) {
                 false
+            }
+        }
+
+        @SuppressLint("PrivateApi")
+        private fun tryMoveExistingTaskToDisplay(atm: Any, pkgName: String, targetDisplayId: Int) {
+            try {
+                val getTasksMethod = atm.javaClass.methods.firstOrNull { m ->
+                    m.name == "getTasks" && m.parameterTypes.size == 1 && m.parameterTypes[0] == Int::class.javaPrimitiveType
+                } ?: atm.javaClass.methods.firstOrNull { m ->
+                    m.name == "getTasks" && m.parameterTypes.size == 3
+                } ?: return
+
+                val tasks = when (getTasksMethod.parameterTypes.size) {
+                    1 -> getTasksMethod.invoke(atm, 25) as? List<*>
+                    3 -> getTasksMethod.invoke(atm, 25, false, false) as? List<*>
+                    else -> null
+                } ?: return
+
+                val moveMethod = atm.javaClass.methods.firstOrNull { m ->
+                    (m.name == "moveRootTaskToDisplay" || m.name == "moveStackToDisplay") &&
+                        m.parameterTypes.size == 2 &&
+                        m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                        m.parameterTypes[1] == Int::class.javaPrimitiveType
+                } ?: return
+
+                for (task in tasks) {
+                    if (task == null) continue
+                    val topComp = runCatching {
+                        task.javaClass.getField("topActivity").get(task) as? ComponentName
+                    }.getOrNull()
+                    val baseComp = runCatching {
+                        task.javaClass.getField("baseActivity").get(task) as? ComponentName
+                    }.getOrNull()
+                    val matchesPkg = topComp?.packageName == pkgName || baseComp?.packageName == pkgName
+                    if (!matchesPkg) continue
+
+                    val taskDisplayId = runCatching {
+                        task.javaClass.getField("displayId").getInt(task)
+                    }.getOrDefault(-1)
+                    if (taskDisplayId == targetDisplayId) continue
+
+                    val taskId = runCatching {
+                        task.javaClass.getField("taskId").getInt(task)
+                    }.getOrElse {
+                        runCatching { task.javaClass.getField("id").getInt(task) }.getOrDefault(-1)
+                    }
+                    if (taskId > 0) {
+                        runCatching { moveMethod.invoke(atm, taskId, targetDisplayId) }
+                    }
+                }
+            } catch (_: Throwable) {
             }
         }
 
@@ -1085,9 +1146,13 @@ object AAMakerPrivilegedDisplayServer {
         ): Int {
             val safeName = displayName.ifBlank { "AAMakerSplitDisplay_$sessionKey" }
             val sdk = Build.VERSION.SDK_INT
+            // Do NOT set VIRTUAL_DISPLAY_FLAG_PRESENTATION on secondary split displays so 3rd-party
+            // Presentation/ADAS/HUD apps (e.g. DiCam ADAS) cannot auto-hijack the secondary display!
+            val includePresentation = sessionKey.endsWith("_primary")
+            val presentationFlag = if (includePresentation) DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION else 0
             val baseFlags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
+                presentationFlag or
                 VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH or
                 VIRTUAL_DISPLAY_FLAG_ROTATES_WITH_CONTENT
 
@@ -1095,26 +1160,26 @@ object AAMakerPrivilegedDisplayServer {
                 if (sdk >= 34) {
                     baseFlags or
                         VIRTUAL_DISPLAY_FLAG_TRUSTED or
+                        VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
                         VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
                         VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED or
                         VIRTUAL_DISPLAY_FLAG_OWN_FOCUS
                 } else {
                     baseFlags or
                         VIRTUAL_DISPLAY_FLAG_TRUSTED or
+                        VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
                         VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
                         VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED
                 },
                 if (sdk >= 34) {
                     baseFlags or
                         VIRTUAL_DISPLAY_FLAG_TRUSTED or
-                        VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
                         VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
                         VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED or
                         VIRTUAL_DISPLAY_FLAG_OWN_FOCUS
                 } else {
                     baseFlags or
                         VIRTUAL_DISPLAY_FLAG_TRUSTED or
-                        VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP or
                         VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED or
                         VIRTUAL_DISPLAY_FLAG_TOUCH_FEEDBACK_DISABLED
                 },

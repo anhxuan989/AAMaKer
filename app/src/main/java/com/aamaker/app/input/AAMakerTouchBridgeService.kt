@@ -133,7 +133,6 @@ object AAMakerCentralBridgeExecutor {
             "am set-standby-bucket '$safePkg' active >/dev/null 2>&1; " +
             "wm dismiss-keyguard >/dev/null 2>&1; "
         val cmd = "${audioFocusCmd}${keepAliveCmd}" +
-            "am start --display $displayId --windowingMode 1 --activity-single-top --activity-reorder-to-front --activity-new-task -n '$safeComp' >/dev/null 2>&1 || " +
             "am start --display $displayId --windowingMode 1 --activity-new-task --activity-multiple-task -n '$safeComp' >/dev/null 2>&1 || " +
             "am start --display $displayId --activity-new-task --activity-multiple-task -n '$safeComp' >/dev/null 2>&1 || " +
             "(am force-stop '$safePkg' >/dev/null 2>&1; am start --display $displayId -n '$safeComp' >/dev/null 2>&1)"
@@ -233,7 +232,9 @@ object AAMakerCentralBridgeExecutor {
         } else {
             val safeBrightness = if (restoreBrightness in 40..255) restoreBrightness else 128
             val safeMode = if (restoreMode in 0..1) restoreMode else 1
-            val cmd = "settings put system screen_brightness $safeBrightness >/dev/null 2>&1; settings put system screen_brightness_mode $safeMode >/dev/null 2>&1"
+            val cmd = "settings put global stay_on_while_plugged_in 0 >/dev/null 2>&1; " +
+                "settings put system screen_brightness $safeBrightness >/dev/null 2>&1; " +
+                "settings put system screen_brightness_mode $safeMode >/dev/null 2>&1"
             runPrivilegedShellCommand(cmd)
         }
     }

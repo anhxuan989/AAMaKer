@@ -150,7 +150,10 @@ object PhoneScreenDimManager {
     fun onPhysicalScreenOffIntercepted(context: Context) {
         val appCtx = context.applicationContext
         acquirePhoneScreenWakeLock(appCtx)
-        dimPhoneScreen(appCtx)
+        // Physical phone screen is already turned off by the Power button / timeout.
+        // Only notify the privileged server to keep DisplayGroup awake with panel off;
+        // NEVER attach a software DimScrimView onto Activity decorViews (which would black out the mirrored car UI!).
+        dimPhoneScreen(appCtx, allowOverlayScrim = false)
     }
 
     /**
@@ -159,7 +162,8 @@ object PhoneScreenDimManager {
      */
     fun dimPhoneScreen(
         context: Context,
-        onSendBridgeCommand: ((String, Bundle) -> Bundle?)? = null
+        onSendBridgeCommand: ((String, Bundle) -> Bundle?)? = null,
+        allowOverlayScrim: Boolean = true
     ) {
         if (onSendBridgeCommand != null) {
             this.bridgeInvoker = onSendBridgeCommand
@@ -219,8 +223,10 @@ object PhoneScreenDimManager {
             isHardwarePanelOffActive = panelOffOk
             mainHandler.post {
                 if (!isDimmed) return@post
-                dimActiveActivitiesOnPhone(appCtx, attachBlackScrim = !panelOffOk)
-                if (!panelOffOk) {
+                // Never attach black scrim inside Activity decorView (it gets mirrored onto Android Auto!).
+                // Only lower window brightness on phone display and use system overlay on Display 0 if requested.
+                dimActiveActivitiesOnPhone(appCtx, attachBlackScrim = false)
+                if (!panelOffOk && allowOverlayScrim) {
                     showDimOverlayIfPermitted(appCtx)
                 } else {
                     removeDimOverlay()
@@ -228,11 +234,11 @@ object PhoneScreenDimManager {
             }
         }
 
-        // 5. Immediately apply window brightness & wake flags on UI thread
+        // 5. Immediately apply window brightness & wake flags on UI thread (never attach scrim to decorView)
         if (!alreadyDimmed) {
             mainHandler.post {
                 if (isDimmed) {
-                    dimActiveActivitiesOnPhone(appCtx, attachBlackScrim = true)
+                    dimActiveActivitiesOnPhone(appCtx, attachBlackScrim = false)
                 }
             }
         }
@@ -313,9 +319,10 @@ object PhoneScreenDimManager {
     }
 
     /**
-     * Applies dimming attributes and optional AMOLED black scrim to an Activity running on the phone's primary display.
+     * Applies dimming attributes (minimum backlight) to an Activity running on the phone's primary display.
+     * Never attaches a black scrim inside the Activity's decorView so mirrored Android Auto projection is never obscured.
      */
-    fun applyDimToActivityWindow(activity: Activity, attachBlackScrim: Boolean = !isHardwarePanelOffActive) {
+    fun applyDimToActivityWindow(activity: Activity, attachBlackScrim: Boolean = false) {
         if (!isDimmed || activity.isFinishing || activity.isDestroyed) return
         mainHandler.post {
             try {
@@ -336,23 +343,7 @@ object PhoneScreenDimManager {
 
                 val decor = win.decorView as? ViewGroup ?: return@post
                 val existingScrim = decor.findViewWithTag<View>(TAG_DIM_SCRIM)
-                if (attachBlackScrim) {
-                    if (existingScrim == null) {
-                        val scrim = createDimScrimView(activity).apply {
-                            tag = TAG_DIM_SCRIM
-                        }
-                        decor.addView(
-                            scrim,
-                            ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        )
-                        scrim.bringToFront()
-                    } else {
-                        existingScrim.bringToFront()
-                    }
-                } else if (existingScrim != null) {
+                if (existingScrim != null) {
                     decor.removeView(existingScrim)
                 }
             } catch (_: Throwable) {

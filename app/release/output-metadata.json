@@ -13,7 +13,7 @@
       "attributes": [],
       "versionCode": 5,
       "versionName": "1.0.4 ",
-      "outputFile": "AAMaKer_1.0.4 _5_20261118_1531.apk"
+      "outputFile": "AAMaKer_1.0.4 _5_20261119_1206.apk"
     }
   ],
   "elementType": "File",
@@ -22,14 +22,14 @@
       "minApi": 28,
       "maxApi": 30,
       "baselineProfiles": [
-        "baselineProfiles/1/AAMaKer_1.0.4 _5_20261118_1531.dm"
+        "baselineProfiles/1/AAMaKer_1.0.4 _5_20261119_1206.dm"
       ]
     },
     {
       "minApi": 31,
       "maxApi": 2147483647,
       "baselineProfiles": [
-        "baselineProfiles/0/AAMaKer_1.0.4 _5_20261118_1531.dm"
+        "baselineProfiles/0/AAMaKer_1.0.4 _5_20261119_1206.dm"
       ]
     }
   ],

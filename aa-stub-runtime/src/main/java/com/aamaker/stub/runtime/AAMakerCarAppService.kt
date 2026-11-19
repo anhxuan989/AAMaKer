@@ -177,11 +177,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                     val now = SystemClock.uptimeMillis()
                     val screenLocked = isPhoneScreenLockedOrOff()
                     val gpuBmp = lastGpuPrimaryBitmap
-                    val gpuFresh = !screenLocked &&
-                        hasReceivedGpuPrimaryFrame &&
+                    val gpuFresh = hasReceivedGpuPrimaryFrame &&
                         gpuBmp != null &&
                         !gpuBmp.isRecycled &&
-                        (now - lastGpuMirrorFrameMs) < 900L
+                        (now - lastGpuMirrorFrameMs) < (if (screenLocked) 750L else 1200L)
                     if (gpuFresh && gpuBmp != null && dualController.isDualModeActive) {
                         postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
                     } else {
@@ -517,7 +516,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     private fun postMainAsync(runnable: Runnable) {
-        postMainAsync(false, runnable)
+        postMainAsync(true, runnable)
     }
 
     private fun postMainDelayedAsync(delayMillis: Long, urgentLockedOnly: Boolean, runnable: Runnable) {
@@ -537,7 +536,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     private fun postMainDelayedAsync(runnable: Runnable, delayMillis: Long) {
-        postMainDelayedAsync(delayMillis, false, runnable)
+        postMainDelayedAsync(delayMillis, true, runnable)
     }
 
     private fun getOrCreateSurfacePostHandler(): Handler {
@@ -570,10 +569,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             val isInteractionBoosted = (now - lastUserInteractionMs) < 3500L || isScrollDragActive
             val vDisplay = resolveActivePrimaryDisplay()
             val vDisplayId = activePrimaryDisplayId()
-            val gpuFresh = !screenLocked &&
-                hasReceivedGpuPrimaryFrame &&
+            val gpuFresh = hasReceivedGpuPrimaryFrame &&
                 lastGpuPrimaryBitmap?.isRecycled == false &&
-                (now - lastGpuMirrorFrameMs) < 900L
+                (now - lastGpuMirrorFrameMs) < (if (screenLocked) 750L else 1200L)
             if (vDisplayId != Display.DEFAULT_DISPLAY) {
                 try {
                     if (screenLocked) {
@@ -612,11 +610,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         val now = SystemClock.uptimeMillis()
         val screenLocked = isPhoneScreenLockedOrOff()
         val gpuBmp = lastGpuPrimaryBitmap
-        val gpuFresh = !screenLocked &&
-            hasReceivedGpuPrimaryFrame &&
+        val gpuFresh = hasReceivedGpuPrimaryFrame &&
             gpuBmp != null &&
             !gpuBmp.isRecycled &&
-            (now - lastGpuMirrorFrameMs) < 900L
+            (now - lastGpuMirrorFrameMs) < (if (screenLocked) 750L else 1200L)
         if (gpuFresh && gpuBmp != null) {
             if (dualController.isDualModeActive) {
                 postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
@@ -767,7 +764,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         lp == null ||
                         (lp.width == ViewGroup.LayoutParams.MATCH_PARENT && lp.height == ViewGroup.LayoutParams.MATCH_PARENT)
 
-                    if (decor.width <= 0 || decor.height <= 0) {
+                    val needsLayout = decor.width <= 0 ||
+                        decor.height <= 0 ||
+                        (allowLockedLayout && decor.isLayoutRequested)
+                    if (needsLayout) {
                         didLockedLayout = true
                         if (isFullScreenWindow) {
                             decor.measure(
@@ -807,9 +807,14 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         safeCanvas.translate(winOffsetX, winOffsetY)
                     }
 
-                    if (now - lastSpecialViewSampleMs >= 200L) {
+                    if (now - lastSpecialViewSampleMs >= 45L) {
                         lastSpecialViewSampleMs = now
                         sampleSpecialViewsThrottled(decor)
+                    }
+                    // Guard: never draw any phone-side dim scrim onto the Android Auto canvas
+                    val strayScrim = (decor as? ViewGroup)?.findViewWithTag<View>("AAMAKER_DIM_SCRIM")
+                    if (strayScrim != null) {
+                        (strayScrim.parent as? ViewGroup)?.removeView(strayScrim)
                     }
                     safeCanvas.activeSurfaceViewFallback = latestSampledSurfaceBitmap
                     decor.draw(safeCanvas)
@@ -918,10 +923,6 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         val w = surfaceView.width
         val h = surfaceView.height
         if (w <= 0 || h <= 0) return
-        try {
-            surfaceView.setSecure(false)
-        } catch (_: Throwable) {
-        }
         val holderSurface = try {
             surfaceView.holder?.surface
         } catch (_: Throwable) {
@@ -1114,7 +1115,17 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                             runRootInputCommand("wm dismiss-keyguard; settings put global stay_on_while_plugged_in 7; settings put system screen_brightness_mode 0; settings put system screen_brightness 0")
                         }
                     } else {
-                        updateCachedPhoneScreenLockedState()
+                        if (action == Intent.ACTION_USER_PRESENT) {
+                            cachedPhoneScreenLockedOrOff = false
+                            if (PhoneScreenDimManager.isDimmed) {
+                                PhoneScreenDimManager.restorePhoneScreen(carContext.applicationContext, keepSessionAwake = true)
+                                if (isRootShellAllowed()) {
+                                    runRootInputCommand("settings put global stay_on_while_plugged_in 0")
+                                }
+                            }
+                        } else {
+                            updateCachedPhoneScreenLockedState()
+                        }
                     }
                     unstopAllWindowRoots(invokeRelayout = false)
                     forceResumeAllProcessActivitiesOnDisplay(vDisplayId)
@@ -2724,11 +2735,12 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                 if (targetDisplay != null && targetDisplayId != Display.DEFAULT_DISPLAY) {
                     val compName = launchIntent.component?.flattenToShortString().orEmpty()
                     if (compName.isNotEmpty()) {
-                        if (!launchedOnVirtualDisplay || isPhoneScreenLockedOrOff()) {
-
+                        if (!launchedOnVirtualDisplay ||
+                            privilegedPrimaryDisplayId > Display.DEFAULT_DISPLAY ||
+                            isPhoneScreenLockedOrOff()
+                        ) {
                             triggerPrivilegedDisplayLaunchIfNeeded(appCtx, targetDisplayId, compName)
                         } else {
-
                             postMainDelayedAsync({
                                 if (isSurfaceReady && findAnyActivityDecorViewsInProcess(targetDisplayId).isEmpty()) {
                                     triggerPrivilegedDisplayLaunchIfNeeded(appCtx, targetDisplayId, compName)
@@ -2855,67 +2867,96 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             primaryDisplayCurrentH = height
             primaryDisplayCurrentDpi = initPrimaryDpi
 
-            // Create local in-process VirtualDisplay immediately (< 2ms on UI thread) so onSurfaceAvailable
-            // NEVER blocks the main thread on ContentProvider/Shizuku IPC (which causes Android Auto 5s ANR)!
-            val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
-                (1 shl 6) // VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
-
-            virtualDisplay = try {
-                displayManager.createVirtualDisplay(
-                    "AAMakerVirtualDisplay_${carContext.packageName}",
-                    initPrimaryW,
-                    height,
-                    initPrimaryDpi,
-                    reader.surface,
-                    flags
-                )
-            } catch (_: SecurityException) {
-                try {
-                    displayManager.createVirtualDisplay(
-                        "AAMakerVirtualDisplay_${carContext.packageName}",
-                        initPrimaryW,
-                        height,
-                        initPrimaryDpi,
-                        reader.surface,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
-                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-                    )
-                } catch (_: SecurityException) {
-                    displayManager.createVirtualDisplay(
-                        "AAMakerVirtualDisplay_${carContext.packageName}",
-                        initPrimaryW,
-                        height,
-                        initPrimaryDpi,
-                        reader.surface,
-                        DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
-                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-                    )
+            // Create Privileged TRUSTED | PUBLIC | OWN_FOCUS Primary VirtualDisplay off the main thread
+            // so onSurfaceAvailable returns in <2ms (ZERO Android Auto ANR) while media players (ViTV, YouTube, etc.)
+            // run natively on a true landscape GPU VirtualDisplay with full SurfaceView/MediaCodec video playback!
+            getOrCreateInputExecutor().execute {
+                if (!isSurfaceReady) return@execute
+                val privReq = Bundle().apply {
+                    putParcelable("surface", reader.surface)
+                    putInt("width", initPrimaryW)
+                    putInt("height", height)
+                    putInt("dpi", initPrimaryDpi)
+                    putString("slot", "primary")
                 }
-            }
+                val privRes = runCatching {
+                    dualController.sendBridgeCommand("create_secondary_display", privReq)
+                }.getOrNull()
+                val privDispId = privRes?.getInt("display_id", Display.INVALID_DISPLAY) ?: Display.INVALID_DISPLAY
 
-            resolveActivePrimaryDisplay()?.let { vDisplay ->
-                registerLockScreenSupport(vDisplay.displayId)
-                presentation?.dismiss()
-                presentation = AppMirrorPresentation(carContext, vDisplay).also { it.show() }
-            } ?: run {
-                val activeId = activePrimaryDisplayId()
-                if (activeId > Display.DEFAULT_DISPLAY) {
-                    registerLockScreenSupport(activeId)
-                }
-            }
+                postMainAsync {
+                    if (!isSurfaceReady) return@postMainAsync
+                    try {
+                        if (privDispId > Display.DEFAULT_DISPLAY) {
+                            privilegedPrimaryDisplayId = privDispId
+                        } else {
+                            val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
+                                (1 shl 6) // VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
 
-            dualController.onCarSurfaceReady(width, height, surfaceDpi, primaryAlreadySized = true)
+                            virtualDisplay = try {
+                                displayManager.createVirtualDisplay(
+                                    "AAMakerVirtualDisplay_${carContext.packageName}",
+                                    initPrimaryW,
+                                    height,
+                                    initPrimaryDpi,
+                                    reader.surface,
+                                    flags
+                                )
+                            } catch (_: SecurityException) {
+                                try {
+                                    displayManager.createVirtualDisplay(
+                                        "AAMakerVirtualDisplay_${carContext.packageName}",
+                                        initPrimaryW,
+                                        height,
+                                        initPrimaryDpi,
+                                        reader.surface,
+                                        DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+                                            DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
+                                    )
+                                } catch (_: SecurityException) {
+                                    displayManager.createVirtualDisplay(
+                                        "AAMakerVirtualDisplay_${carContext.packageName}",
+                                        initPrimaryW,
+                                        height,
+                                        initPrimaryDpi,
+                                        reader.surface,
+                                        DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or
+                                            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
+                                    )
+                                }
+                            }
+                        }
 
-            if (!hasAutoLaunched) {
-                hasAutoLaunched = true
-                postMainDelayedAsync({
-                    if (isSurfaceReady) {
-                        launchOriginalAppActivity(forceCarDisplay = true)
+                        resolveActivePrimaryDisplay()?.let { vDisplay ->
+                            registerLockScreenSupport(vDisplay.displayId)
+                            if (privilegedPrimaryDisplayId <= Display.DEFAULT_DISPLAY) {
+                                presentation?.dismiss()
+                                presentation = AppMirrorPresentation(carContext, vDisplay).also { it.show() }
+                            }
+                        } ?: run {
+                            val activeId = activePrimaryDisplayId()
+                            if (activeId > Display.DEFAULT_DISPLAY) {
+                                registerLockScreenSupport(activeId)
+                            }
+                        }
+
+                        dualController.onCarSurfaceReady(width, height, surfaceDpi, primaryAlreadySized = true)
+
+                        if (!hasAutoLaunched) {
+                            hasAutoLaunched = true
+                            postMainDelayedAsync({
+                                if (isSurfaceReady) {
+                                    launchOriginalAppActivity(forceCarDisplay = true)
+                                }
+                            }, 60L)
+                        }
+                    } catch (_: Throwable) {
+                        renderFallbackBanner(surface, width, height)
                     }
-                }, 80L)
+                }
             }
         } catch (_: Throwable) {
             renderFallbackBanner(surface, width, height)
@@ -2937,6 +2978,9 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         unregisterLockScreenSupport()
         try {
             PhoneScreenDimManager.restorePhoneScreen(carContext.applicationContext, keepSessionAwake = false)
+            if (isRootShellAllowed()) {
+                runRootInputCommand("settings put global stay_on_while_plugged_in 0")
+            }
         } catch (_: Throwable) {
         }
         try {
