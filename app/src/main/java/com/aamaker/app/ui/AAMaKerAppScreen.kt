@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -39,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -55,6 +57,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Security
@@ -113,7 +116,14 @@ import com.aamaker.app.data.TargetAppCandidate
 import com.aamaker.app.i18n.AppLanguage
 import com.aamaker.app.i18n.AppStrings
 import com.aamaker.app.i18n.AppTranslations
+import com.aamaker.app.i18n.CarStageLocalization
+import com.aamaker.app.stage.CarStageTab
 import com.aamaker.core.installer.model.EnvironmentStatus
+import com.mag.anyauto.Apps
+import com.mag.anyauto.Prefs
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.patcher.model.CarAppCategory
 import com.aamaker.core.patcher.model.PatchStrategy
@@ -325,6 +335,9 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
     val strings = remember(state.selectedLanguage) {
         AppTranslations.forLanguage(state.selectedLanguage)
     }
+    val carStageStrings = remember(state.selectedLanguage) {
+        CarStageLocalization.of(state.selectedLanguage)
+    }
     val layoutDirection = if (state.selectedLanguage == AppLanguage.AR) {
         LayoutDirection.Rtl
     } else {
@@ -347,6 +360,14 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
     }
 
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+        if (state.showDisclaimerDialog) {
+            DisclaimerDialog(
+                onAccept = { dontShowAgain ->
+                    viewModel.acceptDisclaimer(dontShowAgain)
+                }
+            )
+        }
+
         if (showLanguageDialog) {
             LanguagePickerDialog(
                 currentLanguage = state.selectedLanguage,
@@ -402,7 +423,7 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                         }
                         IconButton(onClick = {
                             viewModel.refreshEnvironment()
-                            viewModel.loadInstalledApps()
+                            viewModel.loadInstalledApps(forceRefresh = true)
                         }) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
@@ -460,7 +481,24 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                         onClick = { currentTab = 2 },
                         icon = {
                             Icon(
-                                imageVector = if (currentTab == 2) Icons.Default.Security else Icons.Outlined.Security,
+                                imageVector = if (currentTab == 2) Icons.Default.Cast else Icons.Outlined.Cast,
+                                contentDescription = carStageStrings.navCarStage
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = carStageStrings.navCarStage,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 3,
+                        onClick = { currentTab = 3 },
+                        icon = {
+                            Icon(
+                                imageVector = if (currentTab == 3) Icons.Default.Security else Icons.Outlined.Security,
                                 contentDescription = strings.navEnvironment
                             )
                         },
@@ -506,7 +544,12 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                             filePickerLauncher.launch(arrayOf("*/*"))
                         }
                     )
-                    2 -> EnvironmentDiagnosticTab(
+                    2 -> CarStageTab(
+                        candidates = state.installedApps,
+                        strings = carStageStrings,
+                        onRequestShizuku = viewModel::requestShizukuPermission
+                    )
+                    3 -> EnvironmentDiagnosticTab(
                         env = state.envStatus,
                         strings = strings,
                         onRequestShizuku = viewModel::requestShizukuPermission,
@@ -1973,6 +2016,14 @@ private fun EnvironmentDiagnosticTab(
     onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
+    var showAALauncherDialog by remember { mutableStateOf(false) }
+
+    if (showAALauncherDialog) {
+        AndroidAutoLauncherAppsDialog(
+            strings = strings,
+            onDismiss = { showAALauncherDialog = false }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -2156,6 +2207,309 @@ private fun EnvironmentDiagnosticTab(
                 }
             }
         }
+
+        // Independent button: Open all phone apps from AAMaKer on Android Auto
+        FilledTonalButton(
+            onClick = { showAALauncherDialog = true },
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.DirectionsCar,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = strings.aaLauncherButtonTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = strings.aaLauncherButtonSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AndroidAutoLauncherAppsDialog(
+    strings: AppStrings,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var allApps by remember { mutableStateOf<List<Apps.App>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var selectedSet by remember { mutableStateOf(Prefs.carApps(context).toSet()) }
+    var searchQuery by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        val loaded = withContext(Dispatchers.IO) {
+            Apps.launchable(context)
+        }
+        allApps = loaded
+        selectedSet = Prefs.carApps(context).toSet()
+        isLoading = false
+    }
+
+    val filteredApps = remember(allApps, searchQuery) {
+        val q = searchQuery.trim().lowercase()
+        if (q.isEmpty()) {
+            allApps
+        } else {
+            allApps.filter { app ->
+                app.label.lowercase().contains(q) ||
+                    app.component.packageName.lowercase().contains(q)
+            }
+        }
+    }
+
+    val enabledCount = remember(allApps, selectedSet) {
+        allApps.count { selectedSet.contains(it.component.flattenToString()) }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .fillMaxHeight(0.86f),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DirectionsCar,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.aaLauncherDialogTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (!isLoading) {
+                            Text(
+                                text = strings.aaLauncherEnabledCountFormat(enabledCount, allApps.size),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = strings.aaLauncherDialogSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text(strings.aaLauncherSearchHint) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(
+                                    imageVector = Icons.Default.Clear,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val allFlat = allApps.map { it.component.flattenToString() }.toSet()
+                            Prefs.setCarApps(context, allFlat)
+                            selectedSet = allFlat
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = strings.aaLauncherSelectAll,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            Prefs.setCarApps(context, emptySet())
+                            selectedSet = emptySet()
+                        },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = strings.aaLauncherDeselectAll,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        items(
+                            items = filteredApps,
+                            key = { it.component.flattenToString() }
+                        ) { app ->
+                            val flat = app.component.flattenToString()
+                            val isChecked = selectedSet.contains(flat)
+                            val iconBitmap = remember(flat) {
+                                try {
+                                    Apps.bitmap(app.icon(context.packageManager), 96).asImageBitmap()
+                                } catch (_: Throwable) {
+                                    null
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        val nowChecked = !isChecked
+                                        Prefs.setCarApp(context, app.component, nowChecked)
+                                        selectedSet = if (nowChecked) {
+                                            selectedSet + flat
+                                        } else {
+                                            selectedSet - flat
+                                        }
+                                    }
+                                    .padding(horizontal = 6.dp, vertical = 6.dp)
+                            ) {
+                                if (iconBitmap != null) {
+                                    Image(
+                                        bitmap = iconBitmap,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Android,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = app.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = app.component.packageName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Checkbox(
+                                    checked = isChecked,
+                                    onCheckedChange = { checked ->
+                                        Prefs.setCarApp(context, app.component, checked)
+                                        selectedSet = if (checked) {
+                                            selectedSet + flat
+                                        } else {
+                                            selectedSet - flat
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = strings.aaLauncherCloseButton)
+                }
+            }
+        }
     }
 }
 
@@ -2215,6 +2569,154 @@ private fun DiagItemRow(
                     maxLines = 1,
                     softWrap = false
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DisclaimerDialog(
+    onAccept: (dontShowAgain: Boolean) -> Unit
+) {
+    var isAgreed by rememberSaveable { mutableStateOf(false) }
+    var dontShowAgain by rememberSaveable { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Disclaimer & Safety Notice",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "AAMaKer is an open-source project provided strictly for educational, research, and learning purposes.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "All features and tools in this application must NOT be misused while driving or operating a vehicle. Always keep your full attention on the road and comply with all applicable traffic laws and regulations.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "The developers and contributors assume no responsibility or liability for any accidents, damages, legal consequences, or misuse arising from the use of this software. By proceeding, you acknowledge that you use this application entirely at your own risk.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { isAgreed = !isAgreed }
+                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = isAgreed,
+                                onCheckedChange = { isAgreed = it }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "I have read, understood, and agree to the disclaimer above.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { dontShowAgain = !dontShowAgain }
+                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = dontShowAgain,
+                                onCheckedChange = { dontShowAgain = it }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Don't show this again",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = { onAccept(dontShowAgain) },
+                        enabled = isAgreed,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Continue",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
         }
     }

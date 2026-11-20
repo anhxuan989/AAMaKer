@@ -38,8 +38,8 @@ android {
         applicationId = "com.aamaker.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.0.4 "
+        versionCode = 6
+        versionName = "1.0.5 "
 
         vectorDrawables {
             useSupportLibrary = true
@@ -106,6 +106,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
     lint {
         checkReleaseBuilds = false
@@ -127,6 +128,8 @@ dependencies {
     implementation(project(":xposed-hook"))
 
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.car.app)
+    implementation(libs.androidx.car.app.projected)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)

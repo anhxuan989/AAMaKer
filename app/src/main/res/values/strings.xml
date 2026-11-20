@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AAMaKer</string>
+    <string name="car_stage_name">Car Stage</string>
+    <string name="xposed_description">AAMaKer: Spoof Google Play source &amp; Bypass Driving / Parked Restrictions (Use apps while moving on Android Auto)</string>
     <string-array name="xposed_scope">
+        <item>com.aamaker.app</item>
         <item>com.google.android.projection.gearhead</item>
         <item>com.google.android.gms</item>
     </string-array>

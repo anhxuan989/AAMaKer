@@ -221,7 +221,9 @@ object AAMakerCentralBridgeExecutor {
         dim: Boolean,
         restoreBrightness: Int,
         restoreMode: Int,
-        panelOffApplied: Boolean = false
+        panelOffApplied: Boolean = false,
+        restoreAutoRotate: Int = -1,
+        restoreUserRotation: Int = -1
     ) {
         if (dim) {
             val cmd = "wm dismiss-keyguard >/dev/null 2>&1; " +
@@ -232,11 +234,27 @@ object AAMakerCentralBridgeExecutor {
         } else {
             val safeBrightness = if (restoreBrightness in 40..255) restoreBrightness else 128
             val safeMode = if (restoreMode in 0..1) restoreMode else 1
-            val cmd = "settings put global stay_on_while_plugged_in 0 >/dev/null 2>&1; " +
-                "settings put system screen_brightness $safeBrightness >/dev/null 2>&1; " +
-                "settings put system screen_brightness_mode $safeMode >/dev/null 2>&1"
-            runPrivilegedShellCommand(cmd)
+            val sb = StringBuilder()
+            sb.append("settings put global stay_on_while_plugged_in 0 >/dev/null 2>&1; ")
+            sb.append("settings put system screen_brightness $safeBrightness >/dev/null 2>&1; ")
+            sb.append("settings put system screen_brightness_mode $safeMode >/dev/null 2>&1")
+            if (restoreAutoRotate in 0..1) {
+                sb.append("; settings put system accelerometer_rotation $restoreAutoRotate >/dev/null 2>&1")
+                if (restoreAutoRotate == 0 && restoreUserRotation in 0..3) {
+                    sb.append("; settings put system user_rotation $restoreUserRotation >/dev/null 2>&1")
+                }
+            }
+            runPrivilegedShellCommand(sb.toString())
         }
+    }
+
+    fun executeRestorePhoneRotation(autoRotate: Int, userRotation: Int) {
+        if (autoRotate !in 0..1) return
+        val sb = StringBuilder("settings put system accelerometer_rotation $autoRotate >/dev/null 2>&1")
+        if (autoRotate == 0 && userRotation in 0..3) {
+            sb.append("; settings put system user_rotation $userRotation >/dev/null 2>&1")
+        }
+        runPrivilegedShellCommand(sb.toString())
     }
 
     private fun isValidVirtualDisplayForSender(

@@ -19,6 +19,9 @@ local.properties
 bin/
 gen/
 out/
+app/debug/
+app/release/
+*.dm
 
 # Keystore & Signing
 keystore/

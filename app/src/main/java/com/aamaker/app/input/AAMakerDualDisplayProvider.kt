@@ -386,6 +386,8 @@ class AAMakerDualDisplayProvider : ContentProvider() {
         val keepSessionAwake = extras?.getBoolean("keep_session_awake", dim) ?: dim
         val restoreBrightness = extras?.getInt("restore_brightness", -1) ?: -1
         val restoreMode = extras?.getInt("restore_mode", -1) ?: -1
+        val restoreAutoRotate = extras?.getInt("restore_auto_rotate", -1) ?: -1
+        val restoreUserRotation = extras?.getInt("restore_user_rotation", -1) ?: -1
         val binder = PrivilegedServerCoordinator.getOrStartServer(context)
         val panelOffApplied = if (binder != null) {
             PrivilegedServerCoordinator.transactSetPhonePanelPower(binder, dim, keepSessionAwake)
@@ -396,7 +398,9 @@ class AAMakerDualDisplayProvider : ContentProvider() {
             dim = dim,
             restoreBrightness = restoreBrightness,
             restoreMode = restoreMode,
-            panelOffApplied = panelOffApplied
+            panelOffApplied = panelOffApplied,
+            restoreAutoRotate = restoreAutoRotate,
+            restoreUserRotation = restoreUserRotation
         )
         return Bundle().apply {
             putBoolean("ok", true)

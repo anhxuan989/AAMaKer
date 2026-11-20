@@ -7,7 +7,18 @@
 # Xposed Hook & Stub Runtime (bắt buộc giữ nguyên tên class/method để Xposed & Android Auto gọi qua reflection)
 -keep class com.aamaker.xposed.** { *; }
 -keep class com.aamaker.stub.runtime.** { *; }
+-keep class com.aamaker.core.installer.MultiModeInstallerManager {
+    public boolean isXposedModuleActive();
+}
+-keep class com.mag.anyauto.LsposedBridge {
+    public static boolean isHookActive();
+}
 -dontwarn de.robv.android.xposed.**
+-dontwarn io.github.libxposed.**
+-adaptresourcefilecontents META-INF/xposed/java_init.list
+-keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
+    public <init>();
+}
 
 # Android Auto Car App Library
 -keep class androidx.car.app.** { *; }

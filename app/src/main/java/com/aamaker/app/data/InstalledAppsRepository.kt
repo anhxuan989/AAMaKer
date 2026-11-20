@@ -8,8 +8,11 @@ import android.os.Build
 import com.aamaker.core.patcher.security.PackageNameValidator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import java.util.zip.ZipFile
 
 data class TargetAppCandidate(
@@ -25,13 +28,53 @@ data class TargetAppCandidate(
 
 class InstalledAppsRepository(private val context: Context) {
 
-    suspend fun loadInstalledApps(
+    @Volatile
+    private var cachedUserApps: List<TargetAppCandidate>? = null
+
+    @Volatile
+    private var cachedAllApps: List<TargetAppCandidate>? = null
+
+    suspend fun loadCachedInstalledApps(
         includeSystemApps: Boolean = false,
         languageCode: String? = null
+    ): List<TargetAppCandidate>? = withContext(Dispatchers.IO) {
+        val fromMemory = getMemoryCache(includeSystemApps)
+        if (fromMemory != null) {
+            return@withContext sortCandidates(fromMemory, languageCode)
+        }
+
+        val fromDisk = readDiskCache(includeSystemApps)
+            ?: if (!includeSystemApps) {
+                readDiskCache(includeSystemApps = true)?.filterNot { it.isSystemApp }
+            } else {
+                null
+            }
+
+        if (fromDisk != null) {
+            if (includeSystemApps) {
+                cachedAllApps = fromDisk
+                cachedUserApps = fromDisk.filterNot { it.isSystemApp }
+            } else {
+                cachedUserApps = fromDisk
+            }
+            return@withContext sortCandidates(fromDisk, languageCode)
+        }
+
+        null
+    }
+
+    suspend fun loadInstalledApps(
+        includeSystemApps: Boolean = false,
+        languageCode: String? = null,
+        forceRefresh: Boolean = false
     ): List<TargetAppCandidate> =
         withContext(Dispatchers.IO) {
-            val sortLocale = languageCode?.let { java.util.Locale.forLanguageTag(it) }
-                ?: java.util.Locale.getDefault()
+            if (!forceRefresh) {
+                getMemoryCache(includeSystemApps)?.let { cached ->
+                    return@withContext sortCandidates(cached, languageCode)
+                }
+            }
+
             val pm = context.packageManager
             val flags = PackageManager.GET_META_DATA
             val packages = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -41,7 +84,7 @@ class InstalledAppsRepository(private val context: Context) {
                 pm.getInstalledPackages(flags)
             }
 
-            packages.mapNotNull { pkgInfo ->
+            val scanned = packages.mapNotNull { pkgInfo ->
                 val appInfo = pkgInfo.applicationInfo ?: return@mapNotNull null
                 if (pkgInfo.packageName == context.packageName) return@mapNotNull null
 
@@ -91,11 +134,119 @@ class InstalledAppsRepository(private val context: Context) {
                     currentInstallerSource = installerSource,
                     isFromExternalFile = false
                 )
-            }.sortedWith(
-                compareByDescending<TargetAppCandidate> { it.hasExistingCarMeta }
-                    .thenBy { it.appName.lowercase(sortLocale) }
-            )
+            }
+
+            val sorted = sortCandidates(scanned, languageCode)
+            if (includeSystemApps) {
+                cachedAllApps = sorted
+                val userOnly = sorted.filterNot { it.isSystemApp }
+                cachedUserApps = userOnly
+                runCatching { writeDiskCache(includeSystemApps = true, apps = sorted) }
+                runCatching { writeDiskCache(includeSystemApps = false, apps = userOnly) }
+            } else {
+                cachedUserApps = sorted
+                runCatching { writeDiskCache(includeSystemApps = false, apps = sorted) }
+            }
+
+            sorted
         }
+
+    fun invalidateCache() {
+        cachedUserApps = null
+        cachedAllApps = null
+        runCatching { cacheFile(includeSystemApps = false).delete() }
+        runCatching { cacheFile(includeSystemApps = true).delete() }
+    }
+
+    private fun getMemoryCache(includeSystemApps: Boolean): List<TargetAppCandidate>? {
+        return if (includeSystemApps) {
+            cachedAllApps
+        } else {
+            cachedUserApps ?: cachedAllApps?.filterNot { it.isSystemApp }
+        }
+    }
+
+    private fun sortCandidates(
+        candidates: List<TargetAppCandidate>,
+        languageCode: String?
+    ): List<TargetAppCandidate> {
+        val sortLocale = languageCode?.let { Locale.forLanguageTag(it) } ?: Locale.getDefault()
+        return candidates.sortedWith(
+            compareByDescending<TargetAppCandidate> { it.hasExistingCarMeta }
+                .thenBy { it.appName.lowercase(sortLocale) }
+        )
+    }
+
+    private fun cacheFile(includeSystemApps: Boolean): File {
+        val fileName = if (includeSystemApps) CACHE_FILE_ALL else CACHE_FILE_USER
+        return File(context.cacheDir, fileName)
+    }
+
+    private fun readDiskCache(includeSystemApps: Boolean): List<TargetAppCandidate>? {
+        return runCatching {
+            val file = cacheFile(includeSystemApps)
+            if (!file.isFile) return null
+            val raw = file.readText(Charsets.UTF_8)
+            if (raw.isBlank()) return null
+            val array = JSONArray(raw)
+            val result = ArrayList<TargetAppCandidate>(array.length())
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                val packageName = obj.optString("packageName", "")
+                if (packageName.isBlank()) continue
+                val apkPathsJson = obj.optJSONArray("apkPaths") ?: continue
+                val apkFiles = ArrayList<File>(apkPathsJson.length())
+                for (j in 0 until apkPathsJson.length()) {
+                    val path = apkPathsJson.optString(j, "")
+                    if (path.isNotBlank()) {
+                        apkFiles.add(File(path))
+                    }
+                }
+                if (apkFiles.isEmpty()) continue
+                result.add(
+                    TargetAppCandidate(
+                        appName = obj.optString("appName", packageName),
+                        packageName = packageName,
+                        versionName = obj.optString("versionName", "1.0"),
+                        apkFiles = apkFiles,
+                        isSystemApp = obj.optBoolean("isSystemApp", false),
+                        hasExistingCarMeta = obj.optBoolean("hasExistingCarMeta", false),
+                        currentInstallerSource = obj.optString("currentInstallerSource", "").ifBlank { null },
+                        isFromExternalFile = false
+                    )
+                )
+            }
+            result
+        }.getOrNull()
+    }
+
+    private fun writeDiskCache(includeSystemApps: Boolean, apps: List<TargetAppCandidate>) {
+        val array = JSONArray()
+        for (app in apps) {
+            val obj = JSONObject()
+            obj.put("appName", app.appName)
+            obj.put("packageName", app.packageName)
+            obj.put("versionName", app.versionName)
+            val apkPaths = JSONArray()
+            for (file in app.apkFiles) {
+                apkPaths.put(file.absolutePath)
+            }
+            obj.put("apkPaths", apkPaths)
+            obj.put("isSystemApp", app.isSystemApp)
+            obj.put("hasExistingCarMeta", app.hasExistingCarMeta)
+            if (app.currentInstallerSource != null) {
+                obj.put("currentInstallerSource", app.currentInstallerSource)
+            }
+            array.put(obj)
+        }
+        val target = cacheFile(includeSystemApps)
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        tmp.writeText(array.toString(), Charsets.UTF_8)
+        if (!tmp.renameTo(target)) {
+            target.writeText(array.toString(), Charsets.UTF_8)
+            tmp.delete()
+        }
+    }
 
     suspend fun importExternalApkUri(uri: Uri): TargetAppCandidate? = withContext(Dispatchers.IO) {
         try {
@@ -240,5 +391,7 @@ class InstalledAppsRepository(private val context: Context) {
 
     companion object {
         private val SAFE_BUNDLE_NAME_REGEX = Regex("[^a-zA-Z0-9_]")
+        private const val CACHE_FILE_USER = "installed_apps_cache_user_v1.json"
+        private const val CACHE_FILE_ALL = "installed_apps_cache_all_v1.json"
     }
 }

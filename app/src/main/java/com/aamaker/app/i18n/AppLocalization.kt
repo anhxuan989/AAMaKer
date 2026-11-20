@@ -205,6 +205,185 @@ data class AppStrings(
     val statusExportedSuccess: String,
     val statusExportFailed: String
 ) {
+    val aaLauncherButtonTitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Android Auto All-App Launcher"
+            AppLanguage.VI -> "Mở toàn bộ app trên Android Auto"
+            AppLanguage.ZH -> "Android Auto 全部应用启动器"
+            AppLanguage.ES -> "Lanzador de todas las apps en Android Auto"
+            AppLanguage.HI -> "Android Auto सभी ऐप्स लॉन्चर"
+            AppLanguage.AR -> "مشغّل جميع التطبيقات على Android Auto"
+            AppLanguage.PT -> "Lançador de todos os apps no Android Auto"
+            AppLanguage.RU -> "Запуск всех приложений в Android Auto"
+            AppLanguage.JA -> "Android Auto 全アプリランチャー"
+            AppLanguage.DE -> "Android Auto Alle-Apps-Launcher"
+            AppLanguage.FR -> "Lanceur de toutes les apps Android Auto"
+        }
+
+    val aaLauncherButtonSubtitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Choose phone apps to open directly from AAMaKer on Android Auto."
+            AppLanguage.VI -> "Chọn các ứng dụng điện thoại để mở trực tiếp từ AAMaKer trên Android Auto."
+            AppLanguage.ZH -> "选择要直接从 Android Auto 上的 AAMaKer 打开的手机应用。"
+            AppLanguage.ES -> "Elige las apps del teléfono para abrir directamente desde AAMaKer en Android Auto."
+            AppLanguage.HI -> "Android Auto पर AAMaKer से सीधे खोलने के लिए फ़ोन के ऐप्स चुनें।"
+            AppLanguage.AR -> "اختر تطبيقات الهاتف لفتحها مباشرة من AAMaKer على Android Auto."
+            AppLanguage.PT -> "Escolha os apps do telefone para abrir diretamente pelo AAMaKer no Android Auto."
+            AppLanguage.RU -> "Выберите приложения телефона для прямого запуска из AAMaKer в Android Auto."
+            AppLanguage.JA -> "Android Auto の AAMaKer から直接起動するスマホアプリを選択します。"
+            AppLanguage.DE -> "Wähle Telefon-Apps aus, die direkt aus AAMaKer in Android Auto geöffnet werden."
+            AppLanguage.FR -> "Choisissez les apps du téléphone à ouvrir depuis AAMaKer sur Android Auto."
+        }
+
+    val aaLauncherDialogTitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Android Auto Apps"
+            AppLanguage.VI -> "Ứng dụng trên Android Auto"
+            AppLanguage.ZH -> "Android Auto 应用列表"
+            AppLanguage.ES -> "Apps de Android Auto"
+            AppLanguage.HI -> "Android Auto ऐप्स"
+            AppLanguage.AR -> "تطبيقات Android Auto"
+            AppLanguage.PT -> "Apps do Android Auto"
+            AppLanguage.RU -> "Приложения Android Auto"
+            AppLanguage.JA -> "Android Auto アプリ"
+            AppLanguage.DE -> "Android Auto Apps"
+            AppLanguage.FR -> "Apps Android Auto"
+        }
+
+    val aaLauncherDialogSubtitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Only checked apps will appear in AAMaKer on Android Auto."
+            AppLanguage.VI -> "Chỉ những ứng dụng được chọn mới hiển thị trong AAMaKer trên Android Auto."
+            AppLanguage.ZH -> "仅已勾选的应用会显示在 Android Auto 的 AAMaKer 中。"
+            AppLanguage.ES -> "Solo las apps marcadas aparecerán en AAMaKer en Android Auto."
+            AppLanguage.HI -> "केवल चुने गए ऐप्स ही Android Auto पर AAMaKer में दिखाई देंगे।"
+            AppLanguage.AR -> "ستظهر التطبيقات المحددة فقط في AAMaKer على Android Auto."
+            AppLanguage.PT -> "Apenas os apps marcados aparecerão no AAMaKer no Android Auto."
+            AppLanguage.RU -> "В AAMaKer на Android Auto отображаются только выбранные приложения."
+            AppLanguage.JA -> "チェックを入れたアプリのみ Android Auto の AAMaKer に表示されます。"
+            AppLanguage.DE -> "Nur ausgewählte Apps erscheinen in AAMaKer auf Android Auto."
+            AppLanguage.FR -> "Seules les apps cochées apparaîtront dans AAMaKer sur Android Auto."
+        }
+
+    val aaLauncherSearchHint: String
+        get() = when (language) {
+            AppLanguage.EN -> "Search apps..."
+            AppLanguage.VI -> "Tìm ứng dụng..."
+            AppLanguage.ZH -> "搜索应用..."
+            AppLanguage.ES -> "Buscar apps..."
+            AppLanguage.HI -> "ऐप्स खोजें..."
+            AppLanguage.AR -> "ابحث عن التطبيقات..."
+            AppLanguage.PT -> "Pesquisar apps..."
+            AppLanguage.RU -> "Поиск приложений..."
+            AppLanguage.JA -> "アプリを検索..."
+            AppLanguage.DE -> "Apps suchen..."
+            AppLanguage.FR -> "Rechercher des apps..."
+        }
+
+    val aaLauncherSelectAll: String
+        get() = when (language) {
+            AppLanguage.EN -> "Select all"
+            AppLanguage.VI -> "Chọn tất cả"
+            AppLanguage.ZH -> "全选"
+            AppLanguage.ES -> "Seleccionar todo"
+            AppLanguage.HI -> "सभी चुनें"
+            AppLanguage.AR -> "تحديد الكل"
+            AppLanguage.PT -> "Selecionar tudo"
+            AppLanguage.RU -> "Выбрать все"
+            AppLanguage.JA -> "すべて選択"
+            AppLanguage.DE -> "Alle auswählen"
+            AppLanguage.FR -> "Tout sélectionner"
+        }
+
+    val aaLauncherDeselectAll: String
+        get() = when (language) {
+            AppLanguage.EN -> "Deselect all"
+            AppLanguage.VI -> "Bỏ chọn tất cả"
+            AppLanguage.ZH -> "取消全选"
+            AppLanguage.ES -> "Deseleccionar todo"
+            AppLanguage.HI -> "सभी अचयनित करें"
+            AppLanguage.AR -> "إلغاء تحديد الكل"
+            AppLanguage.PT -> "Desmarcar tudo"
+            AppLanguage.RU -> "Снять все"
+            AppLanguage.JA -> "すべて解除"
+            AppLanguage.DE -> "Alle abwählen"
+            AppLanguage.FR -> "Tout désélectionner"
+        }
+
+    fun aaLauncherEnabledCountFormat(enabled: Int, total: Int): String = when (language) {
+        AppLanguage.EN -> "$enabled / $total apps enabled"
+        AppLanguage.VI -> "Đang bật $enabled / $total ứng dụng"
+        AppLanguage.ZH -> "已启用 $enabled / $total 个应用"
+        AppLanguage.ES -> "$enabled / $total apps activadas"
+        AppLanguage.HI -> "$enabled / $total ऐप्स सक्षम"
+        AppLanguage.AR -> "مفعّل $enabled / $total تطبيق"
+        AppLanguage.PT -> "$enabled / $total apps ativados"
+        AppLanguage.RU -> "Включено $enabled / $total приложений"
+        AppLanguage.JA -> "$enabled / $total アプリ有効"
+        AppLanguage.DE -> "$enabled / $total Apps aktiviert"
+        AppLanguage.FR -> "$enabled / $total apps activées"
+    }
+
+    val aaLauncherCloseButton: String
+        get() = when (language) {
+            AppLanguage.EN -> "Done"
+            AppLanguage.VI -> "Xong"
+            AppLanguage.ZH -> "完成"
+            AppLanguage.ES -> "Listo"
+            AppLanguage.HI -> "पूर्ण"
+            AppLanguage.AR -> "تم"
+            AppLanguage.PT -> "Concluído"
+            AppLanguage.RU -> "Готово"
+            AppLanguage.JA -> "完了"
+            AppLanguage.DE -> "Fertig"
+            AppLanguage.FR -> "Terminé"
+        }
+
+    val aaLauncherCarAppsTitle: String
+        get() = when (language) {
+            AppLanguage.EN -> "Apps"
+            AppLanguage.VI -> "Ứng dụng"
+            AppLanguage.ZH -> "应用"
+            AppLanguage.ES -> "Apps"
+            AppLanguage.HI -> "ऐप्स"
+            AppLanguage.AR -> "التطبيقات"
+            AppLanguage.PT -> "Apps"
+            AppLanguage.RU -> "Приложения"
+            AppLanguage.JA -> "アプリ"
+            AppLanguage.DE -> "Apps"
+            AppLanguage.FR -> "Applications"
+        }
+
+    val aaLauncherCarAppOpenLabel: String
+        get() = when (language) {
+            AppLanguage.EN -> "Open"
+            AppLanguage.VI -> "Đang mở"
+            AppLanguage.ZH -> "已打开"
+            AppLanguage.ES -> "Abierta"
+            AppLanguage.HI -> "खुला"
+            AppLanguage.AR -> "مفتوح"
+            AppLanguage.PT -> "Aberto"
+            AppLanguage.RU -> "Открыто"
+            AppLanguage.JA -> "起動中"
+            AppLanguage.DE -> "Offen"
+            AppLanguage.FR -> "Ouverte"
+        }
+
+    val aaLauncherCarEmptyMessage: String
+        get() = when (language) {
+            AppLanguage.EN -> "No apps selected yet.\nOpen AAMaKer on your phone to select apps for Android Auto."
+            AppLanguage.VI -> "Chưa có ứng dụng nào được chọn.\nMở AAMaKer trên điện thoại để chọn ứng dụng hiển thị trên Android Auto."
+            AppLanguage.ZH -> "尚未选择任何应用。\n请在手机上打开 AAMaKer 选择要在 Android Auto 中显示的应用。"
+            AppLanguage.ES -> "Aún no hay apps seleccionadas.\nAbre AAMaKer en tu teléfono para elegir apps para Android Auto."
+            AppLanguage.HI -> "अभी कोई ऐप नहीं चुना गया है।\nAndroid Auto के लिए ऐप्स चुनने हेतु फ़ोन पर AAMaKer खोलें।"
+            AppLanguage.AR -> "لم يتم تحديد أي تطبيقات بعد.\nافتح AAMaKer على هاتفك لاختيار التطبيقات لـ Android Auto."
+            AppLanguage.PT -> "Nenhum app selecionado ainda.\nAbra o AAMaKer no telefone para escolher apps para o Android Auto."
+            AppLanguage.RU -> "Приложения ещё не выбраны.\nОткройте AAMaKer на телефоне, чтобы выбрать приложения для Android Auto."
+            AppLanguage.JA -> "アプリが選択されていません。\nスマホで AAMaKer を開いて Android Auto に表示するアプリを選択してください。"
+            AppLanguage.DE -> "Noch keine Apps ausgewählt.\nÖffne AAMaKer auf dem Telefon, um Apps für Android Auto auszuwählen."
+            AppLanguage.FR -> "Aucune app sélectionnée.\nOuvrez AAMaKer sur votre téléphone pour choisir les apps pour Android Auto."
+        }
+
     fun strategyTitle(strategy: PatchStrategy): String = when (strategy) {
         PatchStrategy.DIRECT_INSTALL_NO_PATCH -> strategyDirectNoPatchTitle
         PatchStrategy.SPOOF_AND_ACTIVATE -> strategySpoofTitle

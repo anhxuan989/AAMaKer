@@ -1,17 +1,22 @@
 # AAMaKer — Any App on Android Auto
 
-**AAMaKer** is an all-in-one Android Auto APK Patcher and Google Play Source Installer. It allows you to unlock third-party Android Auto apps, run standard Android applications (videos, maps, browsers, games, dashboards) directly on your car's head unit screen, and bypass installation source & driving restrictions.
+**AAMaKer** is an all-in-one Android Auto APK Patcher and Google Play Source Installer. It allows you to unlock third-party Android Auto apps, run standard Android applications (maps, browsers, dashboards, games, and experimental video/media apps) directly on your car's head unit screen, and bypass installation source & driving restrictions.
+
+> [!WARNING]
+> **Experimental Video Features & Safety Notice:** All video playback and media viewing features on Android Auto are **strictly experimental** and are **strongly discouraged while driving**. Never watch videos or interact with distracting apps while operating a vehicle—only use them when your vehicle is safely parked.
 
 ---
 
 ## 📱 Screenshots
 
 <p align="center">
-  <img src="screenshots/apps_list.jpg" alt="Apps List Screen" width="30%" />
-  &nbsp;&nbsp;
-  <img src="screenshots/patch_and_install.jpg" alt="Patch & Install Screen" width="30%" />
-  &nbsp;&nbsp;
-  <img src="screenshots/environment_status.jpg" alt="Environment Status Screen" width="30%" />
+  <img src="screenshots/apps_list.jpg" alt="Apps List Screen" width="23%" />
+  &nbsp;
+  <img src="screenshots/patch_and_install.jpg" alt="Patch & Install Screen" width="23%" />
+  &nbsp;
+  <img src="screenshots/car_stage.jpg" alt="Car Stage Screen" width="23%" />
+  &nbsp;
+  <img src="screenshots/environment_status.jpg" alt="Environment Status Screen" width="23%" />
 </p>
 
 <p align="center">
@@ -23,6 +28,11 @@
 ---
 
 ## ✨ Key Features
+
+### 🚗 Built-in Android Auto All-App Launcher & Car Stage (No Patch Required)
+- **Direct Android Auto All-App Launcher:** AAMaKer now registers directly as an Android Auto Car App (`AnyAutoService`), allowing you to launch your phone's installed apps directly on the car screen **without patching or installing separate APKs**. Use the **Android Auto All-App Launcher** selector inside AAMaKer to search and choose exactly which apps appear on your head unit.
+- **Car Stage (Dedicated Split-Screen Workspace):** A dedicated in-car stage (`CarStageCarAppService`) with its own **Car Stage** tab for managing pinned apps, split-screen layouts, and privileged `VirtualDisplay` projection.
+- **Built-in Local Wireless ADB Client:** Alongside Shizuku and Root, Car Stage includes a built-in **Local Wireless ADB** client with Android 11+ mDNS auto-discovery (`_adb-tls-connect._tcp.`) for wireless ADB-over-TCP projection.
 
 ### 🛠️ 6 Versatile Patching & Processing Strategies
 - **Parked / Game Mode (Default):** Runs the app's native UI directly on Android Auto (ideal for Android 15+), automatically merges Split APKs into a single standalone APK, and injects `CAR_LAUNCHER` & game mode declarations.
@@ -47,7 +57,7 @@
 Android Auto blocks sideloaded apps unless they appear to be installed from the Google Play Store (`com.android.vending`). AAMaKer provides **4 installation backends**:
 1. **Shizuku (Recommended - No Root):** Uses ADB privileges (`UID 2000`) via Shizuku to install packages with an authentic Google Play install source on Android 11+.
 2. **Root (Magisk / KernelSU / APatch):** Installs directly via root shell (`pm install -i com.android.vending`) and automatically grants required projection/overlay permissions.
-3. **LSPosed / Xposed Module:** Includes a built-in Xposed module (`GearheadXposedHook`) that hooks Android Auto (`com.google.android.projection.gearhead`) and Google Play Services (`com.google.android.gms`) to bypass install-source checks, unlock `distractionOptimized` activities, and spoof parking brake / zero speed sensor events in real time.
+3. **LSPosed / Xposed Module (Modern & Legacy API):** Includes both a **Modern Xposed API (`libxposed` API 101/102)** entrypoint (`GearheadModernXposedHook`) for modern LSPosed builds and a legacy fallback (`GearheadXposedHook`, API 82/93). Hooks Android Auto (`com.google.android.projection.gearhead`) and Google Play Services (`com.google.android.gms`) to bypass install-source checks, unlock `distractionOptimized` activities, spoof parking brake / zero speed sensor events in real time, and bridge LSPosed status to AAMaKer and companion apps.
 4. **Standard Non-Root Session Installer:** Uses Android's `PackageInstaller` Session API (best for Android 10–13 when combined with Android Auto Developer Mode).
 
 ### 🌍 Modern UI & Multi-Language Support
@@ -104,6 +114,14 @@ To ensure Android Auto recognizes patched apps as coming from Google Play:
 
 ---
 
+## 🚗 Using Built-in Android Auto Launcher & Car Stage
+
+If you want to run phone apps on Android Auto **without patching or cloning APKs**:
+1. **Android Auto All-App Launcher:** Open the **Environment** tab, tap **Android Auto All-App Launcher**, search and check the apps you want to expose, then open **AAMaKer** on your car's Android Auto screen.
+2. **Car Stage:** Switch to the **Car Stage** tab to configure pinned apps, split-screen layouts, and connect via **Shizuku** or the built-in **Local Wireless ADB** (mDNS auto-discovery on Android 11+), then launch **Car Stage** directly from Android Auto.
+
+---
+
 ## 🔧 How to Patch & Install an App
 
 ### Step 1: Select a Target App or APK
@@ -147,15 +165,15 @@ Once an app is selected, you will be taken to the **Patch & Install** tab:
 
 | Module | Description |
 | :--- | :--- |
-| `:app` | Jetpack Compose UI, `MainViewModel`, app discovery repository, 11-language localization, and `AAMakerTouchBridgeService` (Accessibility touch injector). |
+| `:app` | Jetpack Compose UI, `MainViewModel`, app discovery repository, 11-language localization (`AppLocalization` & `CarStageLocalization`), built-in Android Auto All-App Launcher (`AnyAutoService`), **Car Stage** (`CarStageCarAppService`, `CarStageTab`, `LocalWirelessAdbClient`, `CarStageSplitCompositor`), and `AAMakerTouchBridgeService` (Accessibility touch injector). |
 | `:core-patcher` | Binary `AndroidManifest.xml` & `resources.arsc` patcher, Split APK / Bundle merger (`.apks`/`.xapk`), DEX injector, AnyAuto companion engine, and V1/V2/V3 APK signer. |
 | `:core-installer` | Multi-mode installer supporting Shizuku (`UID 2000`), Root (`libsu`), LSPosed status detection, and standard `PackageInstaller` sessions. |
 | `:aa-stub-runtime` | Lightweight runtime stub (`AAMakerCarAppService`) and dual-window compositor injected into target APKs for Universal AA Wrapper and split-screen projection. |
 | `:anyauto-runtime` | Dedicated Car App companion runtime template using Shizuku privileged VirtualDisplay projection, touch bridge, and floating navigation controls. |
-| `:xposed-hook` | LSPosed/Xposed module (`GearheadXposedHook`) hooking Android Auto and Google Play Services for install-source spoofing and driving sensor bypass. |
+| `:xposed-hook` | Dual-API LSPosed/Xposed module supporting **Modern Xposed API (`libxposed` API 101/102)** via `GearheadModernXposedHook` and legacy API 82/93 via `GearheadXposedHook` for install-source spoofing, driving sensor bypass, and `LsposedBridge` integration. |
 
 ---
 
 ## ⚠️ Disclaimer
 
-This project is intended for educational purposes and personal customization. Running non-optimized applications or video/gaming apps while operating a motor vehicle is dangerous and may be illegal in your jurisdiction. Always pay full attention to the road and only interact with complex applications while your vehicle is safely parked.
+This project is intended for educational purposes and personal customization. **All video-watching and media playback features are experimental only and are strictly not recommended for use while driving.** Running non-optimized applications or video/gaming apps while operating a motor vehicle is dangerous and may be illegal in your jurisdiction. Always pay full attention to the road and only use video or complex applications while your vehicle is safely parked.

@@ -54,6 +54,8 @@ object PhoneScreenDimManager {
     private const val PREFS_DIM = "aamaker_dim_prefs"
     private const val KEY_SAVED_BRIGHTNESS = "saved_system_brightness"
     private const val KEY_SAVED_MODE = "saved_system_mode"
+    private const val KEY_SAVED_AUTO_ROTATE = "saved_accelerometer_rotation"
+    private const val KEY_SAVED_USER_ROTATION = "saved_user_rotation"
 
     private val bridgeUri = Uri.parse("content://com.aamaker.app.dualbridge")
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -117,16 +119,76 @@ object PhoneScreenDimManager {
         this.bridgeInvoker = invoker
     }
 
+    private fun saveRotationStateIfNeeded(context: Context) {
+        try {
+            val sp = context.getSharedPreferences(PREFS_DIM, Context.MODE_PRIVATE)
+            if (sp.contains(KEY_SAVED_AUTO_ROTATE)) return
+            val resolver = context.contentResolver
+            val autoRotate = Settings.System.getInt(
+                resolver,
+                Settings.System.ACCELEROMETER_ROTATION,
+                0
+            ).coerceIn(0, 1)
+            val userRotation = Settings.System.getInt(
+                resolver,
+                Settings.System.USER_ROTATION,
+                0
+            ).coerceIn(0, 3)
+            sp.edit()
+                .putInt(KEY_SAVED_AUTO_ROTATE, autoRotate)
+                .putInt(KEY_SAVED_USER_ROTATION, userRotation)
+                .apply()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun consumeSavedRotationState(context: Context): Pair<Int, Int> {
+        return try {
+            val sp = context.getSharedPreferences(PREFS_DIM, Context.MODE_PRIVATE)
+            if (!sp.contains(KEY_SAVED_AUTO_ROTATE)) return -1 to -1
+            val autoRotate = sp.getInt(KEY_SAVED_AUTO_ROTATE, -1)
+            val userRotation = sp.getInt(KEY_SAVED_USER_ROTATION, -1)
+            sp.edit()
+                .remove(KEY_SAVED_AUTO_ROTATE)
+                .remove(KEY_SAVED_USER_ROTATION)
+                .apply()
+            autoRotate to userRotation
+        } catch (_: Throwable) {
+            -1 to -1
+        }
+    }
+
+    private fun applyRotationDirectIfPermitted(context: Context, autoRotate: Int, userRotation: Int) {
+        if (autoRotate !in 0..1) return
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.System.canWrite(context)) {
+                val resolver = context.contentResolver
+                Settings.System.putInt(resolver, Settings.System.ACCELEROMETER_ROTATION, autoRotate)
+                if (autoRotate == 0 && userRotation in 0..3) {
+                    Settings.System.putInt(resolver, Settings.System.USER_ROTATION, userRotation)
+                }
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     /**
      * Notifies the privileged server that an Android Auto projection session is active so it can
      * keep DisplayGroup VSYNC alive and intercept physical Power button presses without freezing.
      */
     fun notifySessionState(context: Context, active: Boolean) {
         val appCtx = context.applicationContext
+        var restoreAutoRotate = -1
+        var restoreUserRotation = -1
         if (active) {
+            saveRotationStateIfNeeded(appCtx)
             acquirePhoneScreenWakeLock(appCtx)
         } else {
             releasePhoneScreenWakeLock()
+            val (savedAuto, savedUser) = consumeSavedRotationState(appCtx)
+            restoreAutoRotate = savedAuto
+            restoreUserRotation = savedUser
+            applyRotationDirectIfPermitted(appCtx, restoreAutoRotate, restoreUserRotation)
         }
         bgExecutor.execute {
             try {
@@ -135,6 +197,8 @@ object PhoneScreenDimManager {
                     putBoolean("keep_session_awake", active)
                     putInt("restore_brightness", -1)
                     putInt("restore_mode", -1)
+                    putInt("restore_auto_rotate", restoreAutoRotate)
+                    putInt("restore_user_rotation", restoreUserRotation)
                 }
                 invokeBridgeCallInternal(appCtx, METHOD_SET_PHONE_BRIGHTNESS, bundle)
             } catch (_: Throwable) {
@@ -149,6 +213,7 @@ object PhoneScreenDimManager {
      */
     fun onPhysicalScreenOffIntercepted(context: Context) {
         val appCtx = context.applicationContext
+        saveRotationStateIfNeeded(appCtx)
         acquirePhoneScreenWakeLock(appCtx)
         // Physical phone screen is already turned off by the Power button / timeout.
         // Only notify the privileged server to keep DisplayGroup awake with panel off;
@@ -172,6 +237,7 @@ object PhoneScreenDimManager {
         isDimmed = true
 
         val appCtx = context.applicationContext
+        saveRotationStateIfNeeded(appCtx)
         acquirePhoneScreenWakeLock(appCtx)
 
         // 1. Record original system brightness into persistent preferences (never overwrite with <= 5!)
@@ -261,10 +327,16 @@ object PhoneScreenDimManager {
 
         val appCtx = context.applicationContext
 
-        // 1. Unregister disconnect broadcast receiver if session is ending
+        // 1. Unregister disconnect broadcast receiver & consume saved rotation if session is ending
+        var restoreAutoRotate = -1
+        var restoreUserRotation = -1
         if (!keepSessionAwake) {
             unregisterDisconnectReceiver(appCtx)
             releasePhoneScreenWakeLock()
+            val (savedAuto, savedUser) = consumeSavedRotationState(appCtx)
+            restoreAutoRotate = savedAuto
+            restoreUserRotation = savedUser
+            applyRotationDirectIfPermitted(appCtx, restoreAutoRotate, restoreUserRotation)
         }
 
         // 2. Retrieve original system brightness from preferences (guaranteed >= 40, default 128)
@@ -290,13 +362,15 @@ object PhoneScreenDimManager {
             }
         }
 
-        // 4. Restore privileged panel power & system brightness via Bridge (Shizuku / Root)
+        // 4. Restore privileged panel power, brightness & rotation via Bridge (Shizuku / Root)
         sendBridgeBrightnessCommand(
             context = appCtx,
             dim = false,
             keepSessionAwake = keepSessionAwake,
             restoreBrightness = restoreBrightness,
             restoreMode = restoreMode,
+            restoreAutoRotate = restoreAutoRotate,
+            restoreUserRotation = restoreUserRotation,
             onResult = null
         )
 
@@ -576,6 +650,8 @@ object PhoneScreenDimManager {
         keepSessionAwake: Boolean,
         restoreBrightness: Int,
         restoreMode: Int,
+        restoreAutoRotate: Int = -1,
+        restoreUserRotation: Int = -1,
         onResult: ((Boolean) -> Unit)? = null
     ) {
         val appCtx = context.applicationContext
@@ -587,6 +663,8 @@ object PhoneScreenDimManager {
                     putBoolean("keep_session_awake", keepSessionAwake)
                     putInt("restore_brightness", restoreBrightness)
                     putInt("restore_mode", restoreMode)
+                    putInt("restore_auto_rotate", restoreAutoRotate)
+                    putInt("restore_user_rotation", restoreUserRotation)
                 }
                 val res = invokeBridgeCallInternal(appCtx, METHOD_SET_PHONE_BRIGHTNESS, bundle)
                 panelOffApplied = res?.getBoolean("panel_off_applied", false) == true

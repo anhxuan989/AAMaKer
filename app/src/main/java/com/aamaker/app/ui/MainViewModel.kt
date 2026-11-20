@@ -10,6 +10,7 @@ import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -79,7 +80,8 @@ data class MainUiState(
     val lastPatchedPackageName: String? = null,
     val lastSavedStoragePath: String? = null,
     val logEntries: List<ConsoleLogEntry> = emptyList(),
-    val statusBannerEntry: ((AppStrings) -> String)? = null
+    val statusBannerEntry: ((AppStrings) -> String)? = null,
+    val showDisclaimerDialog: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -87,15 +89,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val appsRepository = InstalledAppsRepository(application)
     private val installerManager = MultiModeInstallerManager(application)
     private val patcherPipeline = AAMakerPatcherPipeline(application)
+    private var loadAppsJob: Job? = null
 
     private val _uiState = MutableStateFlow(
         MainUiState(
             selectedLanguage = AppLanguage.loadSavedLanguage(application).also { lang ->
                 AppLanguage.applyAppLocale(application, lang, syncSystemLocaleManager = false)
-            }
+            },
+            showDisclaimerDialog = !application
+                .getSharedPreferences(PREFS_APP_GENERAL, android.content.Context.MODE_PRIVATE)
+                .getBoolean(KEY_DISCLAIMER_DONT_SHOW_AGAIN, false)
         )
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    fun acceptDisclaimer(dontShowAgain: Boolean) {
+        if (dontShowAgain) {
+            getApplication<Application>()
+                .getSharedPreferences(PREFS_APP_GENERAL, android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_DISCLAIMER_DONT_SHOW_AGAIN, true)
+                .apply()
+        }
+        _uiState.update { it.copy(showDisclaimerDialog = false) }
+    }
 
     fun selectLanguage(language: AppLanguage) {
         val app = getApplication<Application>()
@@ -121,7 +138,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val apps = appsRepository.loadInstalledApps(
                 includeSystemApps = _uiState.value.includeSystemApps,
-                languageCode = language.code
+                languageCode = language.code,
+                forceRefresh = false
             )
             _uiState.update { it.copy(installedApps = apps) }
         }
@@ -189,19 +207,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadInstalledApps() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingApps = true) }
+    fun loadInstalledApps(forceRefresh: Boolean = false) {
+        loadAppsJob?.cancel()
+        loadAppsJob = viewModelScope.launch {
             val stateSnap = _uiState.value
-            val apps = appsRepository.loadInstalledApps(
-                includeSystemApps = stateSnap.includeSystemApps,
-                languageCode = stateSnap.selectedLanguage.code
-            )
-            _uiState.update {
-                it.copy(
-                    isLoadingApps = false,
-                    installedApps = apps
+            val includeSystem = stateSnap.includeSystemApps
+            val langCode = stateSnap.selectedLanguage.code
+
+            if (!forceRefresh) {
+                val cached = appsRepository.loadCachedInstalledApps(
+                    includeSystemApps = includeSystem,
+                    languageCode = langCode
                 )
+                if (!cached.isNullOrEmpty()) {
+                    _uiState.update {
+                        it.copy(
+                            isLoadingApps = false,
+                            installedApps = cached
+                        )
+                    }
+                    val fresh = appsRepository.loadInstalledApps(
+                        includeSystemApps = includeSystem,
+                        languageCode = langCode,
+                        forceRefresh = true
+                    )
+                    if (_uiState.value.includeSystemApps == includeSystem) {
+                        _uiState.update { it.copy(installedApps = fresh) }
+                    }
+                    return@launch
+                }
+            }
+
+            _uiState.update { it.copy(isLoadingApps = true) }
+            val apps = appsRepository.loadInstalledApps(
+                includeSystemApps = includeSystem,
+                languageCode = langCode,
+                forceRefresh = true
+            )
+            if (_uiState.value.includeSystemApps == includeSystem) {
+                _uiState.update {
+                    it.copy(
+                        isLoadingApps = false,
+                        installedApps = apps
+                    )
+                }
             }
         }
     }
@@ -670,7 +719,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         )
                     }
-                    loadInstalledApps()
+                    loadInstalledApps(forceRefresh = true)
                 }
                 is InstallResult.PendingUserAction -> {
                     _uiState.update {
@@ -726,7 +775,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     )
                 }
-                loadInstalledApps()
+                loadInstalledApps(forceRefresh = true)
             }
             is InstallResult.PendingUserAction -> {
                 _uiState.update {
@@ -764,6 +813,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        private const val PREFS_APP_GENERAL = "aamaker_app_prefs"
+        private const val KEY_DISCLAIMER_DONT_SHOW_AGAIN = "disclaimer_dont_show_again"
         private val SAFE_PKG_NAME_REGEX = Regex("[^a-zA-Z0-9._-]")
         private val TRAILING_AA_SUFFIX_REGEX = Regex("\\.aa\\d{3}$")
         private val timeFormatter = ThreadLocal.withInitial {
