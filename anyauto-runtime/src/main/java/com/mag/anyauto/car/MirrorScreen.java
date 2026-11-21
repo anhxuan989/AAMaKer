@@ -59,6 +59,18 @@ final class MirrorScreen extends Screen implements SurfaceCallback, Mirror.Nav {
         });
         getLifecycle().addObserver(new DefaultLifecycleObserver() {
             @Override
+            public void onStart(@NonNull LifecycleOwner owner) {
+                Log.d(TAG, "screen start");
+                mirror.screenResumed();
+            }
+
+            @Override
+            public void onResume(@NonNull LifecycleOwner owner) {
+                Log.d(TAG, "screen resume");
+                mirror.screenResumed();
+            }
+
+            @Override
             public void onDestroy(@NonNull LifecycleOwner owner) {
                 c.getCarService(AppManager.class).setSurfaceCallback(null);
                 mirror.setNav(null);
@@ -69,17 +81,14 @@ final class MirrorScreen extends Screen implements SurfaceCallback, Mirror.Nav {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        ActionStrip.Builder strip = new ActionStrip.Builder();
-        if (!com.mag.anyauto.TargetAppConfig.isDedicated(getCarContext()) && Prefs.carKnob(getCarContext())) {
-            strip.addAction(new Action.Builder().setIcon(icon(R.drawable.ic_apps))
-                    .setOnClickListener(this::apps)
-                    .build());
-        }
-        strip.addAction(new Action.Builder().setIcon(icon(R.drawable.ic_nav_bar))
-                .setOnClickListener(mirror::toggleNav)
-                .build());
+        // Controls are strictly fixed at the top-left / left edge on the Surface (Compositor).
+        // Use only Action.PAN in ActionStrip so Android Auto never renders a floating circular
+        // button (such as Apps) overlapping the left navigation bar or the projected app.
+        ActionStrip strip = new ActionStrip.Builder()
+                .addAction(Action.PAN)
+                .build();
         NavigationTemplate.Builder b = new NavigationTemplate.Builder()
-                .setActionStrip(strip.build())
+                .setActionStrip(strip)
                 .setMapActionStrip(new ActionStrip.Builder().addAction(Action.PAN).build())
                 .setPanModeListener(on -> {
                     Log.d(TAG, "pan mode " + on);
@@ -115,7 +124,7 @@ final class MirrorScreen extends Screen implements SurfaceCallback, Mirror.Nav {
     @Override
     public void onSurfaceAvailable(@NonNull SurfaceContainer s) {
         Log.i(TAG, "surface " + s.getWidth() + "x" + s.getHeight() + "@" + s.getDpi());
-        if (s.getSurface() == null) return;
+        if (s.getSurface() == null || !s.getSurface().isValid()) return;
         Prefs.setCarSize(getCarContext(), s.getWidth(), s.getHeight());
         mirror.surface(s.getSurface(), s.getWidth(), s.getHeight(), s.getDpi());
     }

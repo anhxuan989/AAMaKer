@@ -6,8 +6,6 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
-import android.os.Handler
-import android.os.Looper
 import androidx.car.app.AppManager
 import androidx.car.app.CarAppService
 import androidx.car.app.CarContext
@@ -62,15 +60,6 @@ private class CarStageSession : Session() {
 
 private class CarStageProjectionScreen(carContext: CarContext) : Screen(carContext) {
 
-    private val uiHandler = Handler(Looper.getMainLooper())
-    private var controlsExpanded = false
-    private val autoCollapseRunnable = Runnable {
-        if (controlsExpanded) {
-            controlsExpanded = false
-            runCatching { invalidate() }
-        }
-    }
-
     private val surfaceCallback = object : SurfaceCallback {
         override fun onSurfaceAvailable(surfaceContainer: SurfaceContainer) {
             runCatching {
@@ -90,17 +79,15 @@ private class CarStageProjectionScreen(carContext: CarContext) : Screen(carConte
             runCatching { CarStageBridge.updateVisibleArea(visibleArea) }
         }
 
+        override fun onStableAreaChanged(stableArea: Rect) {
+            runCatching { CarStageBridge.updateStableArea(stableArea) }
+        }
+
         override fun onSurfaceDestroyed(surfaceContainer: SurfaceContainer) {
-            uiHandler.removeCallbacks(autoCollapseRunnable)
             runCatching { CarStageBridge.detachCarSurface() }
         }
 
         override fun onClick(x: Float, y: Float) {
-            if (controlsExpanded) {
-                controlsExpanded = false
-                uiHandler.removeCallbacks(autoCollapseRunnable)
-                runCatching { invalidate() }
-            }
             runCatching { CarStageBridge.injectTap(x, y) }
         }
 
@@ -117,81 +104,12 @@ private class CarStageProjectionScreen(carContext: CarContext) : Screen(carConte
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surfaceCallback)
     }
 
-    private fun scheduleAutoCollapse() {
-        val delayMs = CarStagePrefs.load(carContext).autoHideSeconds.coerceIn(3, 10) * 1000L
-        uiHandler.removeCallbacks(autoCollapseRunnable)
-        uiHandler.postDelayed(autoCollapseRunnable, delayMs)
-    }
-
     override fun onGetTemplate(): Template {
-        val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(carContext))
-
-        // Ultra-minimalist Car Screen UI:
-        // Collapsed by default to a single compact icon-only toggle; auto-hides after inactivity.
+        // Controls are strictly fixed at the top-left corner inside CarStageSplitCompositor.
+        // Passing Action.PAN satisfies NavigationTemplate's mandatory ActionStrip check while
+        // Android Auto automatically filters out TYPE_PAN on touch head units (no overlapping dark circle).
         val stripBuilder = ActionStrip.Builder()
-        if (!controlsExpanded) {
-            stripBuilder.addAction(
-                Action.Builder()
-                    .setIcon(CarIcon.APP_ICON)
-                    .setOnClickListener {
-                        controlsExpanded = true
-                        scheduleAutoCollapse()
-                        runCatching { invalidate() }
-                    }
-                    .build()
-            )
-        } else {
-            // Ultra-compact, uniform width buttons (A1 | A2 | ↻ | Back) so expanding never shifts/crowds the UI
-            stripBuilder
-                .addAction(
-                    Action.Builder()
-                        .setTitle("A1")
-                        .setOnClickListener {
-                            controlsExpanded = false
-                            uiHandler.removeCallbacks(autoCollapseRunnable)
-                            runCatching {
-                                CarStageBridge.openApp1Picker(carContext.applicationContext)
-                                invalidate()
-                            }
-                        }
-                        .build()
-                )
-                .addAction(
-                    Action.Builder()
-                        .setTitle("A2")
-                        .setOnClickListener {
-                            controlsExpanded = false
-                            uiHandler.removeCallbacks(autoCollapseRunnable)
-                            runCatching {
-                                CarStageBridge.openApp2Split5050(carContext.applicationContext)
-                                invalidate()
-                            }
-                        }
-                        .build()
-                )
-                .addAction(
-                    Action.Builder()
-                        .setTitle("↻")
-                        .setOnClickListener {
-                            controlsExpanded = false
-                            uiHandler.removeCallbacks(autoCollapseRunnable)
-                            runCatching {
-                                CarStageBridge.restartActiveApps()
-                                invalidate()
-                            }
-                        }
-                        .build()
-                )
-                .addAction(
-                    Action.Builder()
-                        .setIcon(CarIcon.BACK)
-                        .setOnClickListener {
-                            scheduleAutoCollapse()
-                            runCatching { CarStageBridge.sendBackKey() }
-                        }
-                        .build()
-                )
-        }
+            .addAction(Action.PAN)
 
         return NavigationTemplate.Builder()
             .setActionStrip(stripBuilder.build())

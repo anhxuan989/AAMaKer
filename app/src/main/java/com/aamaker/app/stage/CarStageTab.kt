@@ -1,7 +1,13 @@
 package com.aamaker.app.stage
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +36,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -38,6 +45,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,6 +77,14 @@ fun CarStageTab(
     val context = LocalContext.current
     val stageState by CarStageBridge.state.collectAsState()
     var showAppPicker by remember { mutableStateOf(false) }
+    var showPairingDialog by remember { mutableStateOf(false) }
+
+    if (showPairingDialog) {
+        ShizukuStylePairingDialog(
+            strings = strings,
+            onDismiss = { showPairingDialog = false }
+        )
+    }
 
     LaunchedEffect(Unit) {
         CarStageBridge.init(context)
@@ -191,6 +207,143 @@ fun CarStageTab(
                 if (stageState.config.bridgeMode == StageBridgeMode.LOCAL_WIRELESS_ADB) {
                     var hostText by remember(stageState.config.adbHost) { mutableStateOf(stageState.config.adbHost) }
                     var portText by remember(stageState.config.adbPort) { mutableStateOf(stageState.config.adbPort.toString()) }
+                    var pairingPortText by remember(stageState.discoveredPairingPort) {
+                        mutableStateOf(stageState.discoveredPairingPort?.toString().orEmpty())
+                    }
+                    var pairingCodeText by remember { mutableStateOf("") }
+
+                    Text(
+                        text = strings.adbPairingGuide,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (stageState.isPairingServiceRunning) {
+                                    CarStageBridge.stopShizukuStylePairingService(context)
+                                } else {
+                                    showPairingDialog = true
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (stageState.isPairingServiceRunning) strings.btnStopPairing else strings.btnPairAdb,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (arePairingNotificationsEnabled(context)) {
+                                    CarStageBridge.startShizukuStylePairingService(context)
+                                }
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(strings.btnOpenDevOptions, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+
+                    // Live Shizuku-identical searching & code entry panel right inside the card when Scan or Pairing is active!
+                    if (stageState.isScanningMdns || stageState.isPairingServiceRunning || stageState.discoveredPairingPort != null) {
+                        val foundPairingPort = stageState.discoveredPairingPort
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (foundPairingPort != null && foundPairingPort > 0) {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHighest
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (foundPairingPort != null && foundPairingPort > 0 && !stageState.isBinding) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    } else {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = when {
+                                                stageState.isBinding -> strings.statusConnecting
+                                                foundPairingPort != null && foundPairingPort > 0 ->
+                                                    "${strings.notifPairFoundTitle} ($foundPairingPort)"
+                                                else -> strings.notifPairSearchingTitle
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = when {
+                                                stageState.isBinding -> strings.notifPairWorkingText
+                                                foundPairingPort != null && foundPairingPort > 0 -> strings.notifPairFoundText
+                                                else -> strings.notifPairSearchingText
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    OutlinedTextField(
+                                        value = pairingPortText,
+                                        onValueChange = { value ->
+                                            pairingPortText = value.filter { it.isDigit() }.take(5)
+                                        },
+                                        label = { Text(strings.adbPortLabel) },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        modifier = Modifier.weight(0.9f)
+                                    )
+                                    OutlinedTextField(
+                                        value = pairingCodeText,
+                                        onValueChange = { value ->
+                                            val clean = value.filter { it.isDigit() }.take(6)
+                                            pairingCodeText = clean
+                                            val pPort = pairingPortText.toIntOrNull() ?: stageState.discoveredPairingPort ?: -1
+                                            if (clean.length == 6 && pPort > 0 && !stageState.isBinding) {
+                                                CarStageBridge.pairWithCodeFromUi(context, pPort, clean)
+                                            }
+                                        },
+                                        label = { Text(strings.adbPairingCodeLabel) },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        modifier = Modifier.weight(1.3f)
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -235,32 +388,24 @@ fun CarStageTab(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                if (stageState.isScanningMdns) {
+                                if (stageState.isScanningMdns || stageState.isPairingServiceRunning) {
                                     CarStageBridge.stopMdnsScan()
+                                    CarStageBridge.stopShizukuStylePairingService(context)
                                 } else {
-                                    CarStageBridge.startMdnsScan(context)
+                                    showPairingDialog = true
                                 }
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = if (stageState.isScanningMdns) strings.btnStopScan else strings.btnScanMdns,
+                                text = if (stageState.isScanningMdns || stageState.isPairingServiceRunning) {
+                                    strings.btnStopScan
+                                } else {
+                                    strings.btnScanMdns
+                                },
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(strings.btnOpenDevOptions, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
@@ -364,30 +509,22 @@ fun CarStageTab(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
-                Text(
-                    text = strings.dockEdgeTitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    val edges = listOf(
-                        StageDockEdge.LEFT to strings.dockEdgeLeft,
-                        StageDockEdge.RIGHT to strings.dockEdgeRight,
-                        StageDockEdge.BOTTOM to strings.dockEdgeBottom
+                    Text(
+                        text = strings.dockEdgeTitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f)
                     )
-                    edges.forEach { (edge, label) ->
-                        FilterChip(
-                            selected = stageState.config.dockEdge == edge,
-                            onClick = {
-                                CarStageBridge.updateConfig(context) { it.copy(dockEdge = edge) }
-                            },
-                            label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
+                    FilterChip(
+                        selected = true,
+                        onClick = {},
+                        label = { Text(strings.dockEdgeLeft, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    )
                 }
 
                 Row(

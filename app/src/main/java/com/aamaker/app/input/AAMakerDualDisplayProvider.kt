@@ -23,6 +23,7 @@ import android.view.Display
 import android.view.Surface
 import com.aamaker.core.patcher.security.BridgeAuthManager
 import com.aamaker.core.patcher.security.PackageNameValidator
+import com.mag.anyauto.Shell
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -44,6 +45,7 @@ class AAMakerDualDisplayProvider : ContentProvider() {
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
         val ctx = context?.applicationContext ?: return null
+        AAMakerCentralBridgeExecutor.setContext(ctx)
 
         if (method == METHOD_REGISTER_PRIVILEGED_SERVER) {
             val callingUid = Binder.getCallingUid()
@@ -53,6 +55,27 @@ class AAMakerDualDisplayProvider : ContentProvider() {
             val serverBinder = extras?.getBinder("server_binder") ?: return null
             val nonce = extras.getString("handshake_nonce")
             PrivilegedServerCoordinator.onServerBinderRegistered(serverBinder, nonce)
+            return Bundle().apply { putBoolean("ok", true) }
+        }
+
+        if (method == METHOD_REGISTER_CAR_STAGE_SERVER) {
+            val callingUid = Binder.getCallingUid()
+            if (callingUid != 0 && callingUid != 2000) {
+                return null
+            }
+            val serverBinder = extras?.getBinder("server_binder") ?: return null
+            val nonce = extras.getString("handshake_nonce")
+            com.aamaker.app.stage.CarStageBridge.onLocalAdbServerBinderRegistered(serverBinder, nonce)
+            return Bundle().apply { putBoolean("ok", true) }
+        }
+
+        if (method == METHOD_REGISTER_ANYAUTO_DISPLAY_SERVER) {
+            val callingUid = Binder.getCallingUid()
+            if (callingUid != 0 && callingUid != 2000) {
+                return null
+            }
+            val serverBinder = extras?.getBinder("server_binder") ?: return null
+            Shell.onLocalAdbDisplayBinderRegistered(serverBinder)
             return Bundle().apply { putBoolean("ok", true) }
         }
 
@@ -424,6 +447,8 @@ class AAMakerDualDisplayProvider : ContentProvider() {
     companion object {
         const val AUTHORITY = "com.aamaker.app.dualbridge"
         const val METHOD_REGISTER_PRIVILEGED_SERVER = "register_privileged_server"
+        const val METHOD_REGISTER_CAR_STAGE_SERVER = "register_car_stage_server"
+        const val METHOD_REGISTER_ANYAUTO_DISPLAY_SERVER = "register_anyauto_display_server"
         const val METHOD_CREATE_SECONDARY_DISPLAY = "create_secondary_display"
         const val METHOD_RELEASE_SECONDARY_DISPLAY = "release_secondary_display"
         const val METHOD_LAUNCH_SECONDARY_APP = "launch_secondary_app"
@@ -502,8 +527,9 @@ internal object PrivilegedServerCoordinator {
             pendingLatch = latch
 
             val serverCls = AAMakerPrivilegedDisplayServer::class.java.name
-            val launchCmd = "pkill -f '$serverCls' >/dev/null 2>&1; CLASSPATH='$apkPath' /system/bin/app_process /system/bin $serverCls '$nonce' >/dev/null 2>&1 &"
-            val submitted = AAMakerCentralBridgeExecutor.submitPrivilegedCommandImmediate(launchCmd)
+            val launchCmd = "pkill -f '[a]amaker_priv_display' >/dev/null 2>&1; " +
+                "CLASSPATH='$apkPath' /system/bin/app_process /system/bin --nice-name=aamaker_priv_display $serverCls '$nonce' >/dev/null 2>&1 &"
+            val submitted = AAMakerCentralBridgeExecutor.submitPrivilegedCommandImmediate(launchCmd, context)
             if (!submitted) {
                 lastFailedStartMs = android.os.SystemClock.uptimeMillis()
                 pendingNonce = null
@@ -512,7 +538,7 @@ internal object PrivilegedServerCoordinator {
             }
 
             try {
-                latch.await(1500L, TimeUnit.MILLISECONDS)
+                latch.await(5000L, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
             } finally {
                 pendingNonce = null

@@ -1,6 +1,8 @@
 package com.aamaker.core.installer.backend
 
+import android.content.Context
 import android.content.pm.PackageManager
+import com.aamaker.core.installer.adb.LocalAdbConnectionManager
 import com.aamaker.core.installer.model.InstallMode
 import com.aamaker.core.installer.model.InstallResult
 import com.aamaker.core.installer.util.InstallerSecurityValidator
@@ -18,7 +20,9 @@ import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-class ShizukuInstaller {
+class ShizukuInstaller(
+    private val context: Context? = null
+) {
 
     private var cachedNewProcessMethod: Method? = null
 
@@ -29,7 +33,7 @@ class ShizukuInstaller {
         val timedOut: Boolean = false
     )
 
-    fun isAvailable(): Boolean {
+    fun isShizukuNativeAvailable(): Boolean {
         return try {
             Shizuku.pingBinder()
         } catch (_: Throwable) {
@@ -37,13 +41,30 @@ class ShizukuInstaller {
         }
     }
 
-    fun hasPermission(): Boolean {
+    fun hasShizukuNativePermission(): Boolean {
         return try {
-            if (!isAvailable()) return false
+            if (!isShizukuNativeAvailable()) return false
             Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         } catch (_: Throwable) {
             false
         }
+    }
+
+    fun isLocalAdbAvailable(): Boolean {
+        val ctx = context ?: return false
+        return try {
+            LocalAdbConnectionManager.getInstance(ctx).isConnected
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun isAvailable(): Boolean {
+        return isShizukuNativeAvailable() || isLocalAdbAvailable()
+    }
+
+    fun hasPermission(): Boolean {
+        return hasShizukuNativePermission() || isLocalAdbAvailable()
     }
 
     suspend fun installApk(
@@ -204,6 +225,35 @@ class ShizukuInstaller {
         stdinFile: File? = null,
         timeoutSeconds: Long = 120L
     ): ProcessResult {
+        if (!hasShizukuNativePermission()) {
+            val ctx = context ?: return ProcessResult(exitCode = -1, stdout = "", stderr = "Local ADB context missing")
+            val adbMgr = LocalAdbConnectionManager.getInstance(ctx)
+            val res = adbMgr.execShell(
+                command = shellCmd,
+                stdinFile = stdinFile,
+                timeoutMs = timeoutSeconds * 1000L
+            )
+            return res.fold(
+                onSuccess = { out ->
+                    val isFailure = out.contains("Failure [", ignoreCase = true) ||
+                        out.contains("Exception:", ignoreCase = true)
+                    ProcessResult(
+                        exitCode = if (isFailure) 1 else 0,
+                        stdout = out,
+                        stderr = "",
+                        timedOut = false
+                    )
+                },
+                onFailure = { err ->
+                    ProcessResult(
+                        exitCode = -1,
+                        stdout = "",
+                        stderr = err.message ?: "Local ADB shell failed",
+                        timedOut = false
+                    )
+                }
+            )
+        }
         val process = createShizukuProcess(arrayOf("sh", "-c", shellCmd))
         val streamPool = Executors.newFixedThreadPool(2)
         try {

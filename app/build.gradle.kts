@@ -38,8 +38,8 @@ android {
         applicationId = "com.aamaker.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.0.5 "
+        versionCode = 7
+        versionName = "1.0.6 "
 
         vectorDrawables {
             useSupportLibrary = true
@@ -131,6 +131,7 @@ dependencies {
     implementation(libs.androidx.car.app)
     implementation(libs.androidx.car.app.projected)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
@@ -144,6 +145,9 @@ dependencies {
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
     implementation(libs.libsu.core)
+    implementation(libs.libadb.android)
+    implementation(libs.conscrypt.android)
+    implementation(libs.hiddenapibypass)
 
     testImplementation("junit:junit:4.13.2")
     debugImplementation(libs.androidx.ui.tooling)

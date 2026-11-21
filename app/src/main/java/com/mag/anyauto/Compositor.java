@@ -127,6 +127,8 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
     private boolean navAppOpen, navReady, navRight;
     private int navSkip;
     private int navPressed = -1;
+    private int toggleTex, toggleDpi;
+    private final Rect toggleRect = new Rect();
     private final Runnable navRelease = () -> {
         navPressed = -1;
         renderNav();
@@ -146,9 +148,14 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
     private FloatBuffer quad;
     private SurfaceTexture texIn;
     private Surface input;
+    private Surface attachedScreen;
     private final float[] texM = new float[16];
-    private boolean haveFrame;
+    private volatile boolean haveFrame;
     private volatile boolean released;
+    private static final long[] REDRAW_BURST_MS = {80L, 220L, 500L, 1000L};
+    private final Runnable burstDraw = () -> {
+        if (!released) draw();
+    };
 
     Compositor(Context context) {
         this.context = context;
@@ -158,44 +165,90 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
     }
 
     /** The surface the virtual display draws into; its buffers are the content size. */
-    Surface input() {
+    synchronized Surface input() {
+        if (!released && texIn != null && (input == null || !input.isValid())) {
+            input = new Surface(texIn);
+        }
         return input;
+    }
+
+    /** True once at least one frame from the virtual display has arrived in {@link #texIn}. */
+    boolean hasFrame() {
+        return haveFrame;
     }
 
     /** Draws into this screen surface from now on (waits until done). */
     void attach(Surface s, int w, int h) {
         runSync(() -> {
             dropWindow();
-            try {
-                window = EGL14.eglCreateWindowSurface(dpy, config, s, new int[]{EGL14.EGL_NONE}, 0);
-            } catch (RuntimeException e) {
-                window = EGL14.EGL_NO_SURFACE;
-            }
-            if (window == null || window == EGL14.EGL_NO_SURFACE) {
-                Log.w(TAG, "compositor: no EGL surface for the screen (0x"
-                        + Integer.toHexString(EGL14.eglGetError()) + ")");
-                window = EGL14.EGL_NO_SURFACE;
-                return;
-            }
+            if (s == null || !s.isValid()) return;
+            attachedScreen = s;
             surfaceW = w;
             surfaceH = h;
+            if (!createWindowSurface()) return;
             renderOverlay();
+            if (!nav.isEmpty()) renderNav();
+            else if (!toggleRect.isEmpty()) renderTogglePill();
             draw();
+            scheduleRedrawBurst();
         });
+    }
+
+    /**
+     * Re-validates the EGL window surface and pushes a multi-frame redraw burst to the car host's
+     * video encoder so returning from car system overlays (reverse camera, OEM UI, notifications)
+     * never leaves a black screen even when the projected app is completely static.
+     */
+    void poke() {
+        gl.post(() -> {
+            if (released || attachedScreen == null || !attachedScreen.isValid()) return;
+            if (window == EGL14.EGL_NO_SURFACE && !createWindowSurface()) return;
+            draw();
+            scheduleRedrawBurst();
+        });
+    }
+
+    private void scheduleRedrawBurst() {
+        gl.removeCallbacks(burstDraw);
+        for (long delay : REDRAW_BURST_MS) {
+            gl.postDelayed(burstDraw, delay);
+        }
+    }
+
+    private boolean createWindowSurface() {
+        if (attachedScreen == null || !attachedScreen.isValid()) {
+            window = EGL14.EGL_NO_SURFACE;
+            return false;
+        }
+        try {
+            window = EGL14.eglCreateWindowSurface(dpy, config, attachedScreen, new int[]{EGL14.EGL_NONE}, 0);
+        } catch (RuntimeException e) {
+            window = EGL14.EGL_NO_SURFACE;
+        }
+        if (window == null || window == EGL14.EGL_NO_SURFACE) {
+            Log.w(TAG, "compositor: no EGL surface for the screen (0x"
+                    + Integer.toHexString(EGL14.eglGetError()) + ")");
+            window = EGL14.EGL_NO_SURFACE;
+            return false;
+        }
+        return true;
     }
 
     /** Stops drawing into the screen surface and lets go of it (waits until done). */
     void detach() {
-        runSync(this::dropWindow);
+        runSync(() -> {
+            attachedScreen = null;
+            dropWindow();
+        });
     }
 
     /** Where in the screen surface the display goes, and so the size of {@link #input()}'s buffers. */
     void content(Rect r, int dpi) {
         Rect copy = new Rect(r);
-        gl.post(() -> {
+        runSync(() -> {
             content.set(copy);
             this.dpi = Math.max(1, dpi);
-            texIn.setDefaultBufferSize(copy.width(), copy.height());
+            texIn.setDefaultBufferSize(Math.max(1, copy.width()), Math.max(1, copy.height()));
             renderOverlay();
             if (cursorDpi != this.dpi) renderCursor();
             draw();
@@ -254,6 +307,24 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
             renderNav();
             draw();
         });
+    }
+
+    /** Fixed top-left toggle pill shown when the left navigation bar is hidden (empty: hidden). */
+    void togglePill(Rect r) {
+        Rect copy = new Rect(r);
+        gl.post(() -> {
+            if (copy.equals(toggleRect) && toggleDpi == dpi) return;
+            toggleRect.set(copy);
+            if (!toggleRect.isEmpty()) renderTogglePill();
+            draw();
+        });
+    }
+
+    static Rect computeTogglePillRect(Rect area, int dpi) {
+        float s = Math.max(1f, dpi / 160f);
+        int margin = Math.round(10f * s);
+        int size = Math.round(38f * s);
+        return new Rect(area.left + margin, area.top + margin, area.left + margin + size, area.top + margin + size);
     }
 
     /** Lights up a navigation button for a moment, so a tap on it shows. */
@@ -359,6 +430,7 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
         uTexM2 = GLES20.glGetUniformLocation(program2, "uTexM");
         overlayTex = texture2D();
         navTex = texture2D();
+        toggleTex = texture2D();
         cursorTex = texture2D();
         cursorDownTex = texture2D();
 
@@ -393,8 +465,15 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
     }
 
     private void draw() {
-        if (window == EGL14.EGL_NO_SURFACE) return;
-        makeCurrent(window);
+        if (window == EGL14.EGL_NO_SURFACE) {
+            if (attachedScreen == null || !attachedScreen.isValid() || !createWindowSurface()) return;
+        }
+        if (!makeCurrent(window)) {
+            dropWindow();
+            if (attachedScreen == null || !attachedScreen.isValid() || !createWindowSurface() || !makeCurrent(window)) {
+                return;
+            }
+        }
         GLES20.glViewport(0, 0, surfaceW, surfaceH);
         GLES20.glClearColor(0, 0, 0, 1);
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
@@ -410,6 +489,12 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
         if (!nav.isEmpty() && navReady) {
             GLES20.glViewport(nav.left, surfaceH - nav.bottom, nav.width(), nav.height());
             quadWith(program2, aPos2, aTex2, uTexM2, GLES20.GL_TEXTURE_2D, navTex, FLIP_Y);
+        } else if (!toggleRect.isEmpty() && toggleDpi > 0) {
+            GLES20.glViewport(toggleRect.left, surfaceH - toggleRect.bottom, toggleRect.width(), toggleRect.height());
+            GLES20.glEnable(GLES20.GL_BLEND);
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+            quadWith(program2, aPos2, aTex2, uTexM2, GLES20.GL_TEXTURE_2D, toggleTex, FLIP_Y);
+            GLES20.glDisable(GLES20.GL_BLEND);
         }
         if (cursorShown && cursorDpi > 0) {
             // centred on the point; Android bitmaps are premultiplied
@@ -420,7 +505,10 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
             quadWith(program2, aPos2, aTex2, uTexM2, GLES20.GL_TEXTURE_2D, cursorDown ? cursorDownTex : cursorTex, FLIP_Y);
             GLES20.glDisable(GLES20.GL_BLEND);
         }
-        EGL14.eglSwapBuffers(dpy, window);
+        if (!EGL14.eglSwapBuffers(dpy, window)) {
+            Log.w(TAG, "compositor: swap failed (0x" + Integer.toHexString(EGL14.eglGetError()) + ")");
+            dropWindow();
+        }
     }
 
     private void quadWith(int prog, int pos, int tex, int texMatrix, int target, int textureId, float[] m) {
@@ -562,6 +650,39 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
         navReady = true;
     }
 
+    private void renderTogglePill() {
+        int w = Math.max(16, toggleRect.width()), h = Math.max(16, toggleRect.height());
+        float s = Math.max(1f, dpi / 160f);
+        Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Canvas cv = new Canvas(b);
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setStyle(Paint.Style.FILL);
+        bg.setColor(0x780F172A);
+        float r = Math.min(w, h) * 0.5f;
+        cv.drawRoundRect(1f, 1f, w - 1f, h - 1f, r, r, bg);
+        Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+        stroke.setStyle(Paint.Style.STROKE);
+        stroke.setStrokeWidth(Math.max(1.5f, 1.5f * s));
+        stroke.setColor(0x8838BDF8);
+        cv.drawRoundRect(1f, 1f, w - 1f, h - 1f, r, r, stroke);
+
+        Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+        line.setStyle(Paint.Style.STROKE);
+        line.setStrokeCap(Paint.Cap.ROUND);
+        line.setStrokeWidth(Math.max(2f, 2.2f * s));
+        line.setColor(0xFF38BDF8);
+        float cx = w * 0.5f, cy = h * 0.5f, half = w * 0.22f, gap = h * 0.14f;
+        cv.drawLine(cx - half, cy - gap, cx + half, cy - gap, line);
+        cv.drawLine(cx - half, cy, cx + half, cy, line);
+        cv.drawLine(cx - half, cy + gap, cx + half, cy + gap, line);
+
+        makeCurrent(window != EGL14.EGL_NO_SURFACE ? window : pbuffer);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, toggleTex);
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, b, 0);
+        b.recycle();
+        toggleDpi = dpi;
+    }
+
     /**
      * The pointer as two bitmaps (normal, and pressed with the ring filled): a white ring with a
      * dark edge, so it shows on light and dark apps, and a dot at the point it clicks. Sizes are
@@ -601,14 +722,15 @@ final class Compositor implements SurfaceTexture.OnFrameAvailableListener {
     }
 
     private void dropWindow() {
+        gl.removeCallbacks(burstDraw);
         if (window == EGL14.EGL_NO_SURFACE) return;
         makeCurrent(pbuffer);
         EGL14.eglDestroySurface(dpy, window);
         window = EGL14.EGL_NO_SURFACE;
     }
 
-    private void makeCurrent(EGLSurface s) {
-        EGL14.eglMakeCurrent(dpy, s, s, ctx);
+    private boolean makeCurrent(EGLSurface s) {
+        return EGL14.eglMakeCurrent(dpy, s, s, ctx);
     }
 
     private static int compile(int type, String src) {

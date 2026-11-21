@@ -32,7 +32,7 @@ public final class Shell {
     private static final long MANAGER_CACHE_MS = 3000;
     private static final int REQUEST = 4100;
     // bump whenever DisplayService changes, so Shizuku starts the new code instead of a running copy
-    private static final int SERVICE_VERSION = 14;
+    private static final int SERVICE_VERSION = 15;
 
     enum State { NO_SHIZUKU, NOT_RUNNING, OLD_SHIZUKU, NO_PERMISSION, CONNECTING, READY }
 

@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.view.Display
+import com.aamaker.core.installer.adb.LocalAdbConnectionManager
 import com.aamaker.core.patcher.security.BridgeAuthManager
 import com.aamaker.core.patcher.security.PackageNameValidator
 import com.topjohnwu.superuser.Shell
@@ -27,6 +28,12 @@ object AAMakerCentralBridgeExecutor {
     private var persistentShizukuProcess: Process? = null
     private var persistentShizukuWriter: OutputStreamWriter? = null
     private var cachedNewProcessMethod: Method? = null
+    @Volatile
+    private var appContextRef: Context? = null
+
+    fun setContext(context: Context) {
+        appContextRef = context.applicationContext
+    }
 
     fun registerAuthorizedDisplayOwner(displayId: Int, ownerPackage: String) {
         if (displayId > Display.DEFAULT_DISPLAY && PackageNameValidator.isValidPackageName(ownerPackage)) {
@@ -164,9 +171,12 @@ object AAMakerCentralBridgeExecutor {
         runPrivilegedShellCommand(cmd)
     }
 
-    fun submitPrivilegedCommandImmediate(cmd: String): Boolean {
+    fun submitPrivilegedCommandImmediate(cmd: String, context: Context? = appContextRef): Boolean {
+        if (context != null && appContextRef == null) {
+            appContextRef = context.applicationContext
+        }
         if (runViaShizuku(cmd)) return true
-        return try {
+        val rootOk = try {
             val granted = Shell.isAppGrantedRoot()
             val hasRoot = if (granted != null) {
                 granted
@@ -182,6 +192,8 @@ object AAMakerCentralBridgeExecutor {
         } catch (_: Throwable) {
             false
         }
+        if (rootOk) return true
+        return runViaLocalAdb(cmd, background = true)
     }
 
     fun executeTouchCommandFallback(
@@ -287,7 +299,7 @@ object AAMakerCentralBridgeExecutor {
         executor.execute {
             if (runViaShizuku(cmd)) return@execute
 
-            try {
+            val ranRoot = try {
                 val granted = Shell.isAppGrantedRoot()
                 val hasRoot = if (granted != null) {
                     granted
@@ -296,9 +308,29 @@ object AAMakerCentralBridgeExecutor {
                 }
                 if (hasRoot) {
                     Shell.cmd(cmd).submit()
+                    true
+                } else {
+                    false
                 }
             } catch (_: Throwable) {
+                false
             }
+            if (ranRoot) return@execute
+            runViaLocalAdb(cmd, background = false)
+        }
+    }
+
+    private fun runViaLocalAdb(cmd: String, background: Boolean): Boolean {
+        val ctx = appContextRef ?: return false
+        return try {
+            val mgr = LocalAdbConnectionManager.getInstance(ctx)
+            if (background) {
+                mgr.execBackgroundShell(cmd)
+            } else {
+                mgr.execShell(cmd, timeoutMs = 15_000L).isSuccess
+            }
+        } catch (_: Throwable) {
+            false
         }
     }
 

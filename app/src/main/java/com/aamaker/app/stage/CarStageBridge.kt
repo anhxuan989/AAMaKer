@@ -10,14 +10,17 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.Surface
 import com.aamaker.app.i18n.AppLanguage
 import com.aamaker.app.i18n.CarStageLocalization
+import com.mag.anyauto.LsposedBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,6 +35,8 @@ data class CarStageState(
     val isBound: Boolean = false,
     val isBinding: Boolean = false,
     val isScanningMdns: Boolean = false,
+    val isPairingServiceRunning: Boolean = false,
+    val isPaired: Boolean = false,
     val discoveredAdbPort: Int? = null,
     val discoveredPairingPort: Int? = null,
     val engineMode: String = "STOPPED",
@@ -69,8 +74,18 @@ object CarStageBridge {
     @Volatile
     private var carDpi: Int = 240
 
-    private val splitCompositor = CarStageSplitCompositor()
+    private val splitCompositor = CarStageSplitCompositor().apply {
+        setOnViewportSizeChangedListener { primaryVp, secondaryVp ->
+            scheduleViewportResizeSync(primaryVp, secondaryVp)
+        }
+    }
     private val localAdb = LocalWirelessAdbClient()
+
+    @Volatile
+    private var pendingPrimaryVp: Rect? = null
+    @Volatile
+    private var pendingSecondaryVp: Rect? = null
+    private val syncViewportResizeRunnable = Runnable { applyPendingViewportResize() }
 
     // Touch / Scroll gesture state for smooth swipe & drag on Android Auto SurfaceCallback
     private val touchHandler = Handler(Looper.getMainLooper())
@@ -94,12 +109,227 @@ object CarStageBridge {
     private var lastPinchInjectTime: Long = 0L
     private val endScrollRunnable = Runnable { finishScrollGesture() }
     private val endSeamDragRunnable = Runnable { finishSeamDrag() }
+    private val autoCollapseTopLeftRunnable = Runnable {
+        if (splitCompositor.controlsExpanded) {
+            splitCompositor.setControlsExpanded(false)
+        }
+    }
+
+    private fun scheduleTopLeftAutoCollapse() {
+        val delayMs = _state.value.config.autoHideSeconds.coerceIn(3, 10) * 1000L
+        touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+        touchHandler.postDelayed(autoCollapseTopLeftRunnable, delayMs)
+    }
+
+    fun toggleTopLeftControls() {
+        val next = !splitCompositor.controlsExpanded
+        splitCompositor.setControlsExpanded(next)
+        if (next) {
+            scheduleTopLeftAutoCollapse()
+        } else {
+            touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+        }
+    }
+
+    private val clientBinderToken = Binder()
+    @Volatile
+    private var shizukuListenersRegistered = false
+    private const val SHIZUKU_PERMISSION_REQ_CODE = 4201
+    private const val USER_SERVICE_VERSION = 6
+
+    @Volatile
+    private var displayAttachedToCarSurface: Boolean = false
+    private val serverSpawnLock = Any()
+    private var compositorWakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireCompositorWakeLock(context: Context) {
+        runCatching {
+            var wl = compositorWakeLock
+            if (wl == null) {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wl = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "aamaker:CarStageCompositor")?.apply {
+                    setReferenceCounted(false)
+                }
+                compositorWakeLock = wl
+            }
+            if (wl != null && !wl.isHeld) {
+                wl.acquire()
+            }
+        }
+    }
+
+    private fun releaseCompositorWakeLock() {
+        runCatching {
+            if (compositorWakeLock?.isHeld == true) {
+                compositorWakeLock?.release()
+            }
+        }
+    }
+
+    @Volatile
+    private var pendingLocalAdbNonce: String? = null
+    @Volatile
+    private var pendingLocalAdbLatch: java.util.concurrent.CountDownLatch? = null
+
+    fun onLocalAdbServerBinderRegistered(binder: IBinder, nonce: String?) {
+        val expected = pendingLocalAdbNonce
+        if (expected != null && nonce != expected) {
+            return
+        }
+        val svc = ICarStageService.Stub.asInterface(binder) ?: return
+        shizukuService = svc
+        runCatching {
+            binder.linkToDeath({
+                if (shizukuService?.asBinder() === binder) {
+                    shizukuService = null
+                    displayAttachedToCarSurface = false
+                    _state.update {
+                        it.copy(
+                            isBound = false,
+                            isBinding = false,
+                            activeDisplayId = -1,
+                            engineMode = "STOPPED"
+                        )
+                    }
+                    appendLog("Local Wireless ADB CarStageServer disconnected")
+                }
+            }, 0)
+        }
+        _state.update {
+            it.copy(
+                isBound = true,
+                isBinding = false,
+                isPaired = true,
+                engineMode = "TRUSTED_DISPLAY",
+                lastError = ""
+            )
+        }
+        splitCompositor.setStatusBanner()
+        appendLog("CarStageDisplayServer bound via Local Wireless ADB (UID 2000)")
+        pendingLocalAdbLatch?.countDown()
+
+        // Perform IPC setup & display creation asynchronously outside ContentProvider.call()
+        // so the server's publish transaction returns immediately without re-entrant Binder deadlocks.
+        scope.launch {
+            runCatching { svc.registerClientToken(clientBinderToken) }
+            runCatching { svc.setImeOnPhone(_state.value.config.imeOnPhone) }
+            runCatching { svc.setKeepPlaybackAlive(_state.value.config.keepPlaybackAlive) }
+            if (carSurface != null && carSurface?.isValid == true) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+            }
+        }
+    }
+
+    fun onPairingServiceStateChanged(isRunning: Boolean) {
+        _state.update { it.copy(isPairingServiceRunning = isRunning) }
+    }
+
+    fun onMdnsConnectPortDiscovered(host: String, port: Int) {
+        val ctx = appContext
+        _state.update { st ->
+            val nextCfg = st.config.copy(adbHost = host, adbPort = port)
+            if (ctx != null) CarStagePrefs.save(ctx, nextCfg)
+            st.copy(
+                discoveredAdbPort = port,
+                config = nextCfg
+            )
+        }
+        appendLog("mDNS discovered connect port: $host:$port")
+    }
+
+    fun onMdnsPairingPortDiscovered(host: String, port: Int) {
+        _state.update { it.copy(discoveredPairingPort = if (port > 0) port else null) }
+        if (port > 0) {
+            appendLog("mDNS discovered pairing port: $host:$port")
+        }
+    }
+
+    fun startShizukuStylePairingService(context: Context) {
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        runCatching {
+            val intent = AdbPairingService.startIntent(appCtx)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                appCtx.startForegroundService(intent)
+            } else {
+                appCtx.startService(intent)
+            }
+            appendLog("Started Shizuku-style Wireless ADB Pairing notification service")
+        }.onFailure { err ->
+            appendLog("Pairing service start error: ${err.message}")
+        }
+    }
+
+    fun stopShizukuStylePairingService(context: Context) {
+        val appCtx = context.applicationContext
+        runCatching {
+            appCtx.startService(AdbPairingService.stopIntent(appCtx))
+        }
+        _state.update { it.copy(isPairingServiceRunning = false) }
+    }
+
+    fun pairWithCodeFromUi(context: Context, pairingPort: Int, pairingCode: String) {
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        val host = _state.value.config.adbHost.ifBlank { "127.0.0.1" }
+        _state.update { it.copy(isBinding = true, lastError = "") }
+        appendLog("Pairing Local Wireless ADB on $host:$pairingPort via SPAKE2...")
+        scope.launch {
+            pairAndConnectBlocking(
+                context = appCtx,
+                host = host,
+                pairingPort = pairingPort,
+                pairingCode = pairingCode,
+                knownConnectPort = _state.value.discoveredAdbPort ?: _state.value.config.adbPort
+            )
+        }
+    }
+
+    internal fun pairAndConnectBlocking(
+        context: Context,
+        host: String,
+        pairingPort: Int,
+        pairingCode: String,
+        knownConnectPort: Int
+    ): Result<Boolean> {
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        val cleanHost = host.ifBlank { "127.0.0.1" }
+        val pairRes = localAdb.pair(appCtx, cleanHost, pairingPort, pairingCode)
+        return pairRes.fold(
+            onSuccess = {
+                _state.update { st ->
+                    val nextMode = if (!isShizukuReady()) StageBridgeMode.LOCAL_WIRELESS_ADB else st.config.bridgeMode
+                    val nextCfg = st.config.copy(bridgeMode = nextMode, adbHost = cleanHost)
+                    CarStagePrefs.save(appCtx, nextCfg)
+                    st.copy(isPaired = true, config = nextCfg, lastError = "")
+                }
+                appendLog("SPAKE2 + TLSv1.3 pairing succeeded on $cleanHost:$pairingPort")
+                val targetConnectPort = _state.value.discoveredAdbPort
+                    ?: knownConnectPort.takeIf { it > 0 && it != pairingPort }
+                    ?: _state.value.config.adbPort
+                connectLocalWirelessAdbBlocking(appCtx, cleanHost, targetConnectPort)
+            },
+            onFailure = { err ->
+                val msg = err.message ?: "Wireless ADB pairing failed"
+                _state.update { it.copy(isBinding = false, lastError = msg) }
+                appendLog("Wireless ADB pairing failed: $msg")
+                Result.failure(err)
+            }
+        )
+    }
 
     private val shizukuConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            if (binder == null || !binder.pingBinder()) {
+                _state.update { it.copy(isBinding = false, isBound = false) }
+                return
+            }
             val svc = ICarStageService.Stub.asInterface(binder)
             shizukuService = svc
+            runCatching { svc.registerClientToken(clientBinderToken) }
             runCatching { svc.setImeOnPhone(_state.value.config.imeOnPhone) }
+            runCatching { svc.setKeepPlaybackAlive(_state.value.config.keepPlaybackAlive) }
             val displayId = runCatching { svc.activeDisplayId }.getOrDefault(-1)
             val mode = runCatching { svc.engineMode }.getOrDefault("STOPPED")
             _state.update {
@@ -111,8 +341,8 @@ object CarStageBridge {
                     lastError = ""
                 )
             }
+            splitCompositor.setStatusBanner()
             appendLog("Shizuku Car Stage connected (mode=$mode, displayId=$displayId)")
-            // If Android Auto surface is already attached, start fresh 50:50 pickers without forcing old apps
             if (carSurface != null && carSurface?.isValid == true) {
                 startDisplayShizuku(carWidth, carHeight, carDpi)
             }
@@ -135,19 +365,60 @@ object CarStageBridge {
     }
 
     fun init(context: Context) {
-        appContext = context.applicationContext
-        val loaded = CarStagePrefs.load(context)
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        val loaded = CarStagePrefs.load(appCtx)
         _state.update { it.copy(config = loaded) }
+        LsposedBridge.setContext(appCtx)
+        registerShizukuListenersOnce(appCtx)
+    }
+
+    private fun registerShizukuListenersOnce(context: Context) {
+        if (shizukuListenersRegistered) return
+        shizukuListenersRegistered = true
+        runCatching {
+            Shizuku.addBinderReceivedListenerSticky({
+                if (_state.value.config.bridgeMode == StageBridgeMode.SHIZUKU &&
+                    !_state.value.isBound && !_state.value.isBinding
+                ) {
+                    if (carSurface?.isValid == true || isShizukuReady()) {
+                        connect(context)
+                    }
+                }
+            }, touchHandler)
+            Shizuku.addBinderDeadListener({
+                if (!LsposedBridge.isDirectModeAvailable(context)) {
+                    shizukuService = null
+                    _state.update {
+                        it.copy(
+                            isBound = false,
+                            isBinding = false,
+                            activeDisplayId = -1,
+                            engineMode = "STOPPED"
+                        )
+                    }
+                }
+            }, touchHandler)
+            Shizuku.addRequestPermissionResultListener({ code, grantResult ->
+                if (code == SHIZUKU_PERMISSION_REQ_CODE && grantResult == PackageManager.PERMISSION_GRANTED) {
+                    connect(context)
+                }
+            }, touchHandler)
+        }
     }
 
     fun updateConfig(context: Context, transform: (CarStageConfig) -> CarStageConfig) {
         val prevMode = _state.value.config.bridgeMode
         val prevIme = _state.value.config.imeOnPhone
+        val prevKeepAlive = _state.value.config.keepPlaybackAlive
         val updated = transform(_state.value.config)
         CarStagePrefs.save(context, updated)
         _state.update { it.copy(config = updated) }
         if (prevIme != updated.imeOnPhone) {
             runCatching { shizukuService?.setImeOnPhone(updated.imeOnPhone) }
+        }
+        if (prevKeepAlive != updated.keepPlaybackAlive) {
+            runCatching { shizukuService?.setKeepPlaybackAlive(updated.keepPlaybackAlive) }
         }
         if (prevMode != updated.bridgeMode && _state.value.isBound) {
             disconnect()
@@ -182,7 +453,7 @@ object CarStageBridge {
         }
         appendLog("Swapped Primary & Secondary Car Stage slots")
         val cfg = _state.value.config
-        if (_state.value.isBound && _state.value.config.bridgeMode == StageBridgeMode.SHIZUKU && cfg.layoutPreset.isSplit) {
+        if (_state.value.isBound && shizukuService != null && cfg.layoutPreset.isSplit) {
             if (cfg.primaryPackage.isNotBlank()) {
                 launchOrMoveShizuku(cfg.primaryPackage)
             }
@@ -241,28 +512,88 @@ object CarStageBridge {
     }
 
     fun applySplitLayout(context: Context, preset: StageLayoutPreset) {
-        appContext = context.applicationContext
+        val appCtx = context.applicationContext
+        appContext = appCtx
         val currentPrimary = _state.value.activePackage
             ?: _state.value.config.primaryPackage.ifBlank { _state.value.config.pinnedPackages.firstOrNull().orEmpty() }
-        updateConfig(context) { cfg ->
+        updateConfig(appCtx) { cfg ->
             cfg.copy(
                 layoutPreset = preset,
                 primaryPackage = currentPrimary
             )
         }
-        val bounds = CarStageLayoutEngine.computeSlots(carWidth, carHeight, preset)
-        appendLog(
-            "Applied split ${preset.key}: left=${bounds.primary.width()}x${bounds.primary.height()}" +
-                (bounds.secondary?.let { ", right=${it.width()}x${it.height()}" } ?: "")
+        val targetSurface = carSurface?.takeIf { it.isValid }
+        val viewports = if (targetSurface != null) {
+            splitCompositor.reconfigureLayoutInPlace(split = preset.isSplit, ratio = preset.primaryRatio)
+        } else {
+            null
+        }
+
+        if (targetSurface != null && viewports == null) {
+            val bounds = CarStageLayoutEngine.computeSlots(carWidth, carHeight, preset)
+            splitCompositor.start(
+                carSurface = targetSurface,
+                slotBounds = bounds,
+                ratio = preset.primaryRatio,
+                fullWidth = carWidth,
+                fullHeight = carHeight,
+                preservePickers = true
+            )
+        }
+
+        val pVp = viewports?.first ?: CarStageLayoutEngine.computePrimaryViewport(
+            CarStageLayoutEngine.computeSlots(carWidth, carHeight, preset)
         )
-        if (_state.value.isBound && _state.value.config.bridgeMode == StageBridgeMode.SHIZUKU) {
-            startDisplayShizuku(carWidth, carHeight, carDpi)
-            if (currentPrimary.isNotBlank()) {
-                launchOrMoveShizuku(currentPrimary)
+        val sVp = viewports?.second
+        appendLog(
+            "Applied split ${preset.key}: left=${pVp.width()}x${pVp.height()}" +
+                (sVp?.let { ", right=${it.width()}x${it.height()}" } ?: "")
+        )
+
+        if (targetSurface != null) {
+            if (currentPrimary.isBlank()) {
+                openLeftInSurfacePicker(appCtx)
             }
-            if (preset.isSplit) {
-                // Show App 1 live on the left, and in-surface App Picker grid on the right
-                openRightInSurfacePicker(context)
+            if (preset.isSplit && _state.value.config.secondaryPackage.isBlank()) {
+                openRightInSurfacePicker(appCtx)
+            }
+        }
+        if (_state.value.isBound && shizukuService != null) {
+            scope.launch {
+                val svc = shizukuService ?: return@launch
+                if (displayAttachedToCarSurface && _state.value.activeDisplayId > 0 && targetSurface != null) {
+                    val isSplitNow = sVp != null
+                    val pDpi = CarStageLayoutEngine.computeSlotDpi(pVp.width(), pVp.height(), carDpi, isSplit = isSplitNow)
+                    val resizedPrimary = runCatching {
+                        svc.resizeStageDisplay(pVp.width(), pVp.height(), pDpi)
+                    }.getOrDefault(false)
+                    if (!resizedPrimary) {
+                        startDisplayShizuku(carWidth, carHeight, carDpi)
+                        return@launch
+                    }
+                    if (sVp != null) {
+                        val sDpi = CarStageLayoutEngine.computeSlotDpi(sVp.width(), sVp.height(), carDpi, isSplit = true)
+                        val resizedSec = runCatching {
+                            svc.resizeSecondaryDisplay(sVp.width(), sVp.height(), sDpi)
+                        }.getOrDefault(false)
+                        if (!resizedSec) {
+                            val secId = runCatching {
+                                svc.startSecondaryDisplay(splitCompositor.secondarySurface, sVp.width(), sVp.height(), sDpi)
+                            }.getOrDefault(-1)
+                            val secPkg = _state.value.config.secondaryPackage
+                            if (secId > 0 && secPkg.isNotBlank() && !splitCompositor.showRightPicker) {
+                                runCatching { svc.launchOrMoveSecondaryApp(secPkg, _state.value.config.moveExistingTask) }
+                            }
+                        }
+                    } else {
+                        runCatching { svc.stopSecondaryDisplay() }
+                    }
+                } else {
+                    startDisplayShizuku(carWidth, carHeight, carDpi)
+                    if (currentPrimary.isNotBlank()) {
+                        launchOrMoveShizuku(currentPrimary)
+                    }
+                }
             }
         }
     }
@@ -305,10 +636,30 @@ object CarStageBridge {
     }
 
     fun selectPrimaryApp(context: Context, packageName: String) {
-        updateConfig(context) { cfg -> cfg.copy(primaryPackage = packageName) }
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        updateConfig(appCtx) { cfg -> cfg.copy(primaryPackage = packageName) }
         splitCompositor.setLeftPicker(show = false)
+        val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(appCtx))
+        splitCompositor.setStatusBanner(strings.statusConnecting, packageName)
         appendLog("Selected 1st split app (left): $packageName")
-        launchOrMoveApp(packageName)
+
+        scope.launch {
+            val svc = ensureBoundServiceBlocking(appCtx)
+            if (svc == null) {
+                openLeftInSurfacePicker(appCtx)
+                return@launch
+            }
+            if (carSurface?.isValid == true && (_state.value.activeDisplayId <= 0 || !displayAttachedToCarSurface)) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+            }
+            val ok = launchOrMoveShizuku(packageName)
+            if (ok) {
+                splitCompositor.setStatusBanner()
+            } else {
+                openLeftInSurfacePicker(appCtx)
+            }
+        }
     }
 
     private fun drawableToBitmap(drawable: Drawable, sizePx: Int): Bitmap {
@@ -323,20 +674,87 @@ object CarStageBridge {
     }
 
     fun selectSecondaryApp(context: Context, packageName: String) {
-        updateConfig(context) { cfg -> cfg.copy(secondaryPackage = packageName) }
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        updateConfig(appCtx) { cfg -> cfg.copy(secondaryPackage = packageName) }
         splitCompositor.setRightPicker(show = false)
+        val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(appCtx))
+        splitCompositor.setStatusBanner(strings.statusConnecting, packageName)
         appendLog("Selected 2nd split app (right): $packageName")
-        val svc = shizukuService
-        if (_state.value.config.bridgeMode == StageBridgeMode.SHIZUKU && svc != null) {
+
+        scope.launch {
+            val svc = ensureBoundServiceBlocking(appCtx)
+            if (svc == null) {
+                openRightInSurfacePicker(appCtx)
+                return@launch
+            }
+            if (carSurface?.isValid == true && (_state.value.activeDisplayId <= 0 || !displayAttachedToCarSurface)) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+            }
             val moveTask = _state.value.config.moveExistingTask
-            val ok = runCatching { svc.launchOrMoveSecondaryApp(packageName, moveTask) }.getOrDefault(false)
-            appendLog("Shizuku launchOrMoveSecondaryApp($packageName) -> $ok")
-        } else {
-            launchOrMoveApp(packageName)
+            var ok = runCatching { svc.launchOrMoveSecondaryApp(packageName, moveTask) }.getOrDefault(false)
+            if (!ok && carSurface?.isValid == true) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+                ok = runCatching { svc.launchOrMoveSecondaryApp(packageName, moveTask) }.getOrDefault(false)
+            }
+            appendLog("launchOrMoveSecondaryApp($packageName) -> $ok")
+            if (ok) {
+                splitCompositor.setStatusBanner()
+            } else {
+                openRightInSurfacePicker(appCtx)
+            }
         }
     }
 
+    private fun ensureBoundServiceBlocking(context: Context): ICarStageService? {
+        val appCtx = context.applicationContext
+        appContext = appCtx
+
+        shizukuService?.takeIf { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) }?.let {
+            return it
+        }
+
+        // Wait if an async bind is already underway
+        if (_state.value.isBinding) {
+            val deadline = SystemClock.uptimeMillis() + 7000L
+            while (_state.value.isBinding && SystemClock.uptimeMillis() < deadline) {
+                shizukuService?.takeIf { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) }?.let {
+                    return it
+                }
+                runCatching { Thread.sleep(100L) }
+            }
+            shizukuService?.takeIf { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) }?.let {
+                return it
+            }
+        }
+
+        val preferLocalAdb = _state.value.config.bridgeMode == StageBridgeMode.LOCAL_WIRELESS_ADB ||
+            (!isShizukuReady() && (localAdb.isConnected(appCtx) || localAdb.hasPairedKeys(appCtx)))
+
+        if (preferLocalAdb) {
+            val host = _state.value.config.adbHost.ifBlank { "127.0.0.1" }
+            val port = _state.value.discoveredAdbPort ?: _state.value.config.adbPort
+            _state.update { it.copy(isBinding = true, lastError = "") }
+            connectLocalWirelessAdbBlocking(appCtx, host, port)
+            return shizukuService?.takeIf { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) }
+        }
+
+        connectShizuku(appCtx)
+        val deadline = SystemClock.uptimeMillis() + 5000L
+        while (_state.value.isBinding && SystemClock.uptimeMillis() < deadline) {
+            shizukuService?.takeIf { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) }?.let {
+                return it
+            }
+            runCatching { Thread.sleep(100L) }
+        }
+        return shizukuService?.takeIf { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) }
+    }
+
     fun isShizukuReady(): Boolean {
+        val ctx = appContext
+        if (ctx != null && LsposedBridge.isDirectModeAvailable(ctx)) {
+            return true
+        }
         return try {
             Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         } catch (_: Throwable) {
@@ -371,77 +789,221 @@ object CarStageBridge {
     }
 
     fun connect(context: Context) {
+        val appCtx = context.applicationContext
+        appContext = appCtx
         if (_state.value.isBound || _state.value.isBinding) return
         when (_state.value.config.bridgeMode) {
-            StageBridgeMode.SHIZUKU -> connectShizuku(context)
-            StageBridgeMode.LOCAL_WIRELESS_ADB -> connectLocalWirelessAdb()
+            StageBridgeMode.SHIZUKU -> connectShizuku(appCtx)
+            StageBridgeMode.LOCAL_WIRELESS_ADB -> connectLocalWirelessAdb(appCtx)
         }
     }
 
     private fun connectShizuku(context: Context) {
-        if (!isShizukuReady()) {
-            _state.update { it.copy(lastError = "Shizuku is not running or permission not granted") }
-            appendLog("Connect aborted: Shizuku not ready")
+        val appCtx = context.applicationContext
+        val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(appCtx))
+
+        // 1. Direct in-process mode when Root + LSPosed system_server hook is active
+        if (LsposedBridge.isDirectModeAvailable(appCtx)) {
+            val directSvc = CarStageDisplayServer(appCtx, inProcess = true)
+            shizukuService = directSvc
+            runCatching { directSvc.setImeOnPhone(_state.value.config.imeOnPhone) }
+            runCatching { directSvc.setKeepPlaybackAlive(_state.value.config.keepPlaybackAlive) }
+            _state.update {
+                it.copy(
+                    isBound = true,
+                    isBinding = false,
+                    engineMode = "TRUSTED_DISPLAY",
+                    lastError = ""
+                )
+            }
+            splitCompositor.setStatusBanner()
+            appendLog("Car Stage connected via Direct VirtualDisplay mode")
+            if (carSurface?.isValid == true) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+            }
             return
         }
+
+        // 2. Standard Shizuku mode (with automatic fallback to paired Local Wireless ADB if Shizuku is not running)
+        val binderAlive = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
+        if (!binderAlive) {
+            if (localAdb.isConnected(appCtx) || localAdb.hasPairedKeys(appCtx)) {
+                appendLog("Shizuku not running; falling back to paired Local Wireless ADB...")
+                connectLocalWirelessAdb(appCtx)
+                return
+            }
+            _state.update { it.copy(lastError = "Shizuku is not running") }
+            splitCompositor.setStatusBanner(strings.statusDisconnected, strings.btnGrantShizuku)
+            appendLog("Connect waiting: Shizuku binder not ready yet")
+            return
+        }
+
+        val permGranted = runCatching {
+            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+        if (!permGranted) {
+            if (localAdb.isConnected(appCtx) || localAdb.hasPairedKeys(appCtx)) {
+                appendLog("Shizuku permission not granted; falling back to paired Local Wireless ADB...")
+                connectLocalWirelessAdb(appCtx)
+                return
+            }
+            _state.update { it.copy(lastError = "Shizuku permission not granted") }
+            splitCompositor.setStatusBanner(strings.btnGrantShizuku, strings.statusDisconnected)
+            runCatching { Shizuku.requestPermission(SHIZUKU_PERMISSION_REQ_CODE) }
+            appendLog("Requested Shizuku permission for Car Stage")
+            return
+        }
+
         try {
             val args = Shizuku.UserServiceArgs(
-                ComponentName(context.packageName, CarStageDisplayServer::class.java.name)
+                ComponentName(appCtx.packageName, CarStageDisplayServer::class.java.name)
             )
                 .daemon(false)
                 .processNameSuffix("car_stage")
                 .debuggable(false)
-                .version(1)
+                .version(USER_SERVICE_VERSION)
             userServiceArgs = args
             _state.update { it.copy(isBinding = true, lastError = "") }
-            appendLog("Binding CarStageDisplayServer via Shizuku...")
+            splitCompositor.setStatusBanner(strings.statusConnecting, strings.bridgeModeShizuku)
+            appendLog("Binding CarStageDisplayServer (v$USER_SERVICE_VERSION) via Shizuku...")
             Shizuku.bindUserService(args, shizukuConnection)
         } catch (t: Throwable) {
             _state.update { it.copy(isBinding = false, lastError = t.message ?: "Bind failed") }
+            splitCompositor.setStatusBanner(strings.statusDisconnected, t.message ?: "")
             appendLog("Bind failed: ${t.message}")
         }
     }
 
-    private fun connectLocalWirelessAdb() {
+    private fun connectLocalWirelessAdb(context: Context) {
+        val appCtx = context.applicationContext
+        val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(appCtx))
         val host = _state.value.config.adbHost.ifBlank { "127.0.0.1" }
-        val port = _state.value.config.adbPort
+        val port = _state.value.discoveredAdbPort ?: _state.value.config.adbPort
         _state.update { it.copy(isBinding = true, lastError = "") }
+        splitCompositor.setStatusBanner(strings.statusConnecting, strings.bridgeModeLocalAdb)
         appendLog("Connecting Local Wireless ADB to $host:$port...")
 
         scope.launch {
-            val res = localAdb.connect(host, port)
-            res.onSuccess { banner ->
-                _state.update {
-                    it.copy(
-                        isBound = true,
-                        isBinding = false,
-                        engineMode = "LOCAL_ADB",
+            connectLocalWirelessAdbBlocking(appCtx, host, port)
+        }
+    }
+
+    internal fun connectLocalWirelessAdbBlocking(
+        context: Context,
+        host: String,
+        port: Int
+    ): Result<Boolean> {
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        val res = localAdb.connect(appCtx, host, port)
+        return res.fold(
+            onSuccess = { connectedPort ->
+                _state.update { st ->
+                    val nextCfg = st.config.copy(adbHost = host, adbPort = connectedPort)
+                    CarStagePrefs.save(appCtx, nextCfg)
+                    st.copy(
+                        isPaired = true,
+                        discoveredAdbPort = connectedPort,
+                        config = nextCfg,
                         lastError = ""
                     )
                 }
-                appendLog("Local Wireless ADB connected ($banner)")
-            }.onFailure { err ->
+                appendLog("Local Wireless ADB connected on $host:$connectedPort. Starting UID 2000 servers...")
+                val spawned = spawnCarStageServerViaLocalAdb(appCtx)
+                // Warm up Dual-Window privileged server in the background as well
+                scope.launch {
+                    runCatching { com.aamaker.app.input.PrivilegedServerCoordinator.getOrStartServer(appCtx) }
+                }
+                if (spawned) {
+                    Result.success(true)
+                } else {
+                    val errMsg = "Failed to bind CarStageDisplayServer (UID 2000) via Local Wireless ADB"
+                    val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(appCtx))
+                    _state.update {
+                        it.copy(
+                            isBound = false,
+                            isBinding = false,
+                            engineMode = "STOPPED",
+                            lastError = errMsg
+                        )
+                    }
+                    splitCompositor.setStatusBanner(strings.statusDisconnected, errMsg)
+                    appendLog(errMsg)
+                    Result.failure(IllegalStateException(errMsg))
+                }
+            },
+            onFailure = { err ->
+                val strings = CarStageLocalization.of(AppLanguage.loadSavedLanguage(appCtx))
+                val msg = err.message ?: "ADB connection failed"
                 _state.update {
                     it.copy(
                         isBound = false,
                         isBinding = false,
                         engineMode = "STOPPED",
-                        lastError = err.message ?: "ADB connection failed"
+                        lastError = msg
                     )
                 }
-                appendLog("Local ADB failed: ${err.message}")
+                splitCompositor.setStatusBanner(strings.statusDisconnected, msg)
+                appendLog("Local ADB failed: $msg")
+                Result.failure(err)
             }
+        )
+    }
+
+    private fun spawnCarStageServerViaLocalAdb(context: Context): Boolean {
+        synchronized(serverSpawnLock) {
+            val existing = shizukuService
+            if (existing != null && runCatching { existing.asBinder().isBinderAlive }.getOrDefault(false)) {
+                return true
+            }
+            val apkPath = context.applicationInfo.sourceDir
+            if (apkPath.isNullOrBlank()) return false
+
+            val nonceBytes = ByteArray(16)
+            java.security.SecureRandom().nextBytes(nonceBytes)
+            val nonce = nonceBytes.joinToString("") { "%02x".format(it) }
+            val latch = java.util.concurrent.CountDownLatch(1)
+            pendingLocalAdbNonce = nonce
+            pendingLocalAdbLatch = latch
+
+            val serverCls = CarStageDisplayServer::class.java.name
+            // Bracketed pattern `[a]amaker_car_stage` + `--nice-name=aamaker_car_stage` + `setsid` ensures pkill
+            // terminates only previous server instances, NEVER matches wrapper shells, and detaches from adbd session.
+            val cmd = "pkill -f '[a]amaker_car_stage' >/dev/null 2>&1; " +
+                "if command -v setsid >/dev/null 2>&1; then " +
+                "CLASSPATH='$apkPath' setsid /system/bin/app_process /system/bin --nice-name=aamaker_car_stage $serverCls '$nonce' </dev/null >/dev/null 2>&1 & " +
+                "else " +
+                "CLASSPATH='$apkPath' /system/bin/app_process /system/bin --nice-name=aamaker_car_stage $serverCls '$nonce' </dev/null >/dev/null 2>&1 & " +
+                "fi"
+            val submitted = localAdb.execBackgroundShell(context, cmd)
+            if (!submitted) {
+                pendingLocalAdbNonce = null
+                pendingLocalAdbLatch = null
+                return false
+            }
+            try {
+                latch.await(8000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+            } finally {
+                pendingLocalAdbNonce = null
+                pendingLocalAdbLatch = null
+            }
+            return shizukuService?.let { runCatching { it.asBinder().isBinderAlive }.getOrDefault(false) } == true
         }
     }
 
     fun disconnect() {
         stopMdnsScan()
+        releaseCompositorWakeLock()
+        appContext?.let { stopShizukuStylePairingService(it) }
         runCatching { shizukuService?.stopStageDisplay() }
+        runCatching { shizukuService?.destroy() }
         userServiceArgs?.let { args ->
             runCatching { Shizuku.unbindUserService(args, shizukuConnection, true) }
         }
         shizukuService = null
-        localAdb.disconnect()
+        displayAttachedToCarSurface = false
+        localAdb.disconnect(appContext)
 
         _state.update {
             it.copy(
@@ -456,40 +1018,68 @@ object CarStageBridge {
     }
 
     fun startDisplay(width: Int = 1280, height: Int = 720, dpi: Int = 240): Int {
-        return when (_state.value.config.bridgeMode) {
-            StageBridgeMode.SHIZUKU -> startDisplayShizuku(width, height, dpi)
-            StageBridgeMode.LOCAL_WIRELESS_ADB -> {
-                startDisplayLocalAdb()
-                0
+        if (shizukuService != null) {
+            return startDisplayShizuku(width, height, dpi)
+        }
+        val ctx = appContext ?: return -1
+        scope.launch {
+            val svc = ensureBoundServiceBlocking(ctx)
+            if (svc != null && carSurface?.isValid == true) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
             }
         }
+        return -1
     }
 
     fun attachCarSurface(context: Context, surface: Surface, width: Int, height: Int, dpi: Int) {
-        init(context)
-        // Start every Android Auto session fresh on 50:50 dual app pickers (no forced stale apps)
+        val appCtx = context.applicationContext
+        init(appCtx)
+        acquireCompositorWakeLock(appCtx)
+        val queuedFromPhone = _state.value.activePackage.orEmpty()
+        // Start fresh on 50:50 dual app pickers unless user explicitly queued an app right before opening AA
         _state.update { st ->
             st.copy(
-                activePackage = null,
+                activePackage = queuedFromPhone.ifBlank { null },
                 config = st.config.copy(
                     layoutPreset = StageLayoutPreset.SPLIT_50_50,
-                    primaryPackage = "",
+                    primaryPackage = queuedFromPhone,
                     secondaryPackage = ""
                 )
             )
         }
         carSurface = surface
+        displayAttachedToCarSurface = false
         carWidth = width.coerceIn(480, 3840)
         carHeight = height.coerceIn(320, 2160)
         carDpi = dpi.coerceIn(120, 640)
         appendLog("Android Auto surface attached (${carWidth}x${carHeight} @ ${carDpi}dpi)")
 
+        // Immediately start the GL compositor and render the dual in-surface app pickers
+        // so the car screen NEVER shows a blank/black surface even before server binding finishes.
+        val bounds = CarStageLayoutEngine.computeSlots(carWidth, carHeight, StageLayoutPreset.SPLIT_50_50)
+        splitCompositor.start(
+            carSurface = surface,
+            slotBounds = bounds,
+            ratio = StageLayoutPreset.SPLIT_50_50.primaryRatio,
+            fullWidth = carWidth,
+            fullHeight = carHeight,
+            preservePickers = false
+        )
+        if (queuedFromPhone.isBlank()) {
+            openLeftInSurfacePicker(appCtx)
+        } else {
+            splitCompositor.setLeftPicker(show = false)
+        }
+        openRightInSurfacePicker(appCtx)
+
         if (!_state.value.isBound && !_state.value.isBinding) {
-            connect(context)
+            connect(appCtx)
             return
         }
-        if (_state.value.config.bridgeMode == StageBridgeMode.SHIZUKU && _state.value.isBound) {
-            startDisplayShizuku(carWidth, carHeight, carDpi)
+        if (shizukuService != null && _state.value.isBound) {
+            scope.launch {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+            }
         }
     }
 
@@ -497,8 +1087,58 @@ object CarStageBridge {
         splitCompositor.updateVisibleArea(visibleArea)
     }
 
+    fun updateStableArea(stableArea: Rect) {
+        splitCompositor.updateStableArea(stableArea)
+    }
+
+    private fun scheduleViewportResizeSync(primaryVp: Rect, secondaryVp: Rect?) {
+        pendingPrimaryVp = Rect(primaryVp)
+        pendingSecondaryVp = secondaryVp?.let { Rect(it) }
+        touchHandler.removeCallbacks(syncViewportResizeRunnable)
+        touchHandler.postDelayed(syncViewportResizeRunnable, 140L)
+    }
+
+    private fun applyPendingViewportResize() {
+        val pVp = pendingPrimaryVp ?: return
+        val sVp = pendingSecondaryVp
+        val svc = shizukuService ?: return
+        if (!displayAttachedToCarSurface || _state.value.activeDisplayId <= 0) return
+        if (carSurface?.isValid != true) return
+
+        scope.launch {
+            val isSplit = sVp != null
+            val pDpi = CarStageLayoutEngine.computeSlotDpi(pVp.width(), pVp.height(), carDpi, isSplit = isSplit)
+            val okP = runCatching { svc.resizeStageDisplay(pVp.width(), pVp.height(), pDpi) }.getOrDefault(false)
+            if (sVp != null) {
+                val sDpi = CarStageLayoutEngine.computeSlotDpi(sVp.width(), sVp.height(), carDpi, isSplit = true)
+                val okS = runCatching { svc.resizeSecondaryDisplay(sVp.width(), sVp.height(), sDpi) }.getOrDefault(false)
+                if (!okS && _state.value.config.layoutPreset.isSplit) {
+                    val secId = runCatching {
+                        svc.startSecondaryDisplay(splitCompositor.secondarySurface, sVp.width(), sVp.height(), sDpi)
+                    }.getOrDefault(-1)
+                    val secPkg = _state.value.config.secondaryPackage
+                    if (secId > 0 && secPkg.isNotBlank() && !splitCompositor.showRightPicker) {
+                        runCatching { svc.launchOrMoveSecondaryApp(secPkg, _state.value.config.moveExistingTask) }
+                    }
+                }
+            } else {
+                runCatching { svc.stopSecondaryDisplay() }
+            }
+            if (okP) {
+                appendLog(
+                    "Synced 1:1 stage viewport -> left=${pVp.width()}x${pVp.height()}@${pDpi}dpi" +
+                        (sVp?.let { ", right=${it.width()}x${it.height()}" } ?: "")
+                )
+            }
+        }
+    }
+
     fun detachCarSurface() {
+        touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+        touchHandler.removeCallbacks(syncViewportResizeRunnable)
+        releaseCompositorWakeLock()
         carSurface = null
+        displayAttachedToCarSurface = false
         splitCompositor.stop()
         runCatching { shizukuService?.stopStageDisplay() }
         _state.update { it.copy(activeDisplayId = -1, engineMode = "STOPPED") }
@@ -506,12 +1146,14 @@ object CarStageBridge {
     }
 
     fun sendBackKey() {
-        when (_state.value.config.bridgeMode) {
-            StageBridgeMode.SHIZUKU -> runCatching { shizukuService?.sendBackKey() }
-            StageBridgeMode.LOCAL_WIRELESS_ADB -> {
-                val id = _state.value.activeDisplayId.coerceAtLeast(0)
-                scope.launch { localAdb.execShell("input -d $id keyevent 4") }
-            }
+        val svc = shizukuService
+        if (svc != null) {
+            runCatching { svc.sendBackKey() }
+            return
+        }
+        val id = _state.value.activeDisplayId
+        if (id > 0 && _state.value.config.bridgeMode == StageBridgeMode.LOCAL_WIRELESS_ADB) {
+            scope.launch { localAdb.execShell(appContext, "input -d $id keyevent 4") }
         }
     }
 
@@ -523,28 +1165,19 @@ object CarStageBridge {
         val primaryPkg = _state.value.activePackage ?: cfg.primaryPackage
         val secondaryPkg = cfg.secondaryPackage
         scope.launch {
-            when (cfg.bridgeMode) {
-                StageBridgeMode.SHIZUKU -> {
-                    val svc = shizukuService ?: return@launch
-                    // Re-initialize display surface first in case it went stale/black
-                    if (carSurface?.isValid == true) {
-                        startDisplayShizuku(carWidth, carHeight, carDpi)
-                    }
-                    if (primaryPkg.isNotBlank()) {
-                        val ok = runCatching { svc.restartAppOnDisplay(primaryPkg, false) }.getOrDefault(false)
-                        appendLog("Restarted App 1 ($primaryPkg) -> $ok")
-                    }
-                    if (cfg.layoutPreset.isSplit && secondaryPkg.isNotBlank() && !splitCompositor.showRightPicker) {
-                        val ok2 = runCatching { svc.restartAppOnDisplay(secondaryPkg, true) }.getOrDefault(false)
-                        appendLog("Restarted App 2 ($secondaryPkg) -> $ok2")
-                    }
+            val ctx = appContext
+            val svc = shizukuService ?: (if (ctx != null) ensureBoundServiceBlocking(ctx) else null)
+            if (svc != null) {
+                if (carSurface?.isValid == true) {
+                    startDisplayShizuku(carWidth, carHeight, carDpi)
                 }
-                StageBridgeMode.LOCAL_WIRELESS_ADB -> {
-                    if (primaryPkg.isNotBlank()) {
-                        localAdb.execShell("am force-stop $primaryPkg")
-                        launchOrMoveLocalAdb(primaryPkg)
-                        appendLog("Restarted $primaryPkg via Local ADB")
-                    }
+                if (primaryPkg.isNotBlank()) {
+                    val ok = runCatching { svc.restartAppOnDisplay(primaryPkg, false) }.getOrDefault(false)
+                    appendLog("Restarted App 1 ($primaryPkg) -> $ok")
+                }
+                if (cfg.layoutPreset.isSplit && secondaryPkg.isNotBlank() && !splitCompositor.showRightPicker) {
+                    val ok2 = runCatching { svc.restartAppOnDisplay(secondaryPkg, true) }.getOrDefault(false)
+                    appendLog("Restarted App 2 ($secondaryPkg) -> $ok2")
                 }
             }
         }
@@ -552,68 +1185,136 @@ object CarStageBridge {
 
     fun injectTap(x: Float, y: Float) {
         if (scrollActive) finishScrollGesture()
-        when (_state.value.config.bridgeMode) {
-            StageBridgeMode.SHIZUKU -> {
-                val bounds = splitCompositor.currentBounds
-                val sec = bounds?.secondary
-                if (bounds != null && sec != null) {
-                    // 0. If ratio dropdown menu is open, handle selection or dismiss
-                    if (splitCompositor.showRatioMenu) {
-                        val pickedPreset = splitCompositor.hitTestRatioMenu(x, y)
-                        splitCompositor.setRatioMenu(false)
-                        val ctx = appContext
-                        if (pickedPreset != null && ctx != null) {
-                            applySplitLayout(ctx, pickedPreset)
-                        }
-                        return
-                    }
-                    // 1. Tapping center seam handle toggles ratio dropdown AND arms live horizontal drag
-                    if (splitCompositor.hitTestSeamHandle(x, y)) {
-                        seamDragArmed = true
-                        splitCompositor.setRatioMenu(!splitCompositor.showRatioMenu)
-                        return
-                    }
-                    // 2. If left-slot in-surface picker is open, check which app tile was tapped
-                    if (splitCompositor.showLeftPicker && x < sec.left) {
-                        lastTouchIsSecondary = false
-                        val pickedPkg = splitCompositor.hitTestLeftPickerApp(x, y)
-                        val ctx = appContext
-                        if (pickedPkg != null && ctx != null) {
-                            selectPrimaryApp(ctx, pickedPkg)
-                        }
-                        return
-                    }
-                    // 3. If right-slot in-surface picker is open, check which app tile was tapped
-                    if (splitCompositor.showRightPicker && x >= sec.left) {
-                        lastTouchIsSecondary = true
-                        val pickedPkg = splitCompositor.hitTestRightPickerApp(x, y)
-                        val ctx = appContext
-                        if (pickedPkg != null && ctx != null) {
-                            selectSecondaryApp(ctx, pickedPkg)
-                        }
-                        return
-                    }
+
+        // 0. Always hit-test the fixed Top-Left control pill/bar first
+        val topLeftAction = splitCompositor.hitTestTopLeftControl(x, y)
+        if (topLeftAction != null) {
+            val ctx = appContext
+            when (topLeftAction) {
+                "expand" -> {
+                    splitCompositor.setControlsExpanded(true)
+                    scheduleTopLeftAutoCollapse()
                 }
-                if (bounds != null && sec != null && x >= sec.left) {
-                    seamDragArmed = false
-                    lastTouchIsSecondary = true
-                    val (mx, my) = splitCompositor.mapTouchToSecondary(x, y)
-                    runCatching { shizukuService?.injectTapOnSecondary(mx, my) }
-                } else {
-                    seamDragArmed = false
+                "collapse" -> {
+                    touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+                    splitCompositor.setControlsExpanded(false)
+                }
+                "app1" -> {
+                    touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+                    splitCompositor.setControlsExpanded(false)
+                    if (ctx != null) openApp1Picker(ctx)
+                }
+                "app2" -> {
+                    touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+                    splitCompositor.setControlsExpanded(false)
+                    if (ctx != null) openApp2Split5050(ctx)
+                }
+                "restart" -> {
+                    touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+                    splitCompositor.setControlsExpanded(false)
+                    restartActiveApps()
+                }
+                "back" -> {
+                    scheduleTopLeftAutoCollapse()
+                    sendBackKey()
+                }
+            }
+            return
+        }
+
+        if (splitCompositor.controlsExpanded) {
+            touchHandler.removeCallbacks(autoCollapseTopLeftRunnable)
+            splitCompositor.setControlsExpanded(false)
+        }
+
+        val bounds = splitCompositor.currentBounds
+        val sec = bounds?.secondary
+
+        // Handle in-surface UI (Ratio menu, Seam handle, Left/Right App Picker grids) regardless of bridge connection state
+        if (bounds != null) {
+            if (sec != null) {
+                // 0. If ratio dropdown menu is open, handle selection or dismiss
+                if (splitCompositor.showRatioMenu) {
+                    val pickedPreset = splitCompositor.hitTestRatioMenu(x, y)
+                    splitCompositor.setRatioMenu(false)
+                    val ctx = appContext
+                    if (pickedPreset != null && ctx != null) {
+                        applySplitLayout(ctx, pickedPreset)
+                    }
+                    return
+                }
+                // 1. Tapping center seam handle toggles ratio dropdown AND arms live horizontal drag
+                if (splitCompositor.hitTestSeamHandle(x, y)) {
+                    seamDragArmed = true
+                    splitCompositor.setRatioMenu(!splitCompositor.showRatioMenu)
+                    return
+                }
+                // 2. If left-slot in-surface picker is open, check which app tile was tapped
+                if (splitCompositor.showLeftPicker && x < sec.left) {
                     lastTouchIsSecondary = false
-                    val (mx, my) = if (bounds != null) {
-                        splitCompositor.mapTouchToPrimary(x, y)
-                    } else {
-                        Pair(x, y)
+                    val pickedPkg = splitCompositor.hitTestLeftPickerApp(x, y)
+                    val ctx = appContext
+                    if (pickedPkg != null && ctx != null) {
+                        selectPrimaryApp(ctx, pickedPkg)
                     }
-                    runCatching { shizukuService?.injectTap(mx, my) }
+                    return
+                }
+                // 3. If right-slot in-surface picker is open, check which app tile was tapped
+                if (splitCompositor.showRightPicker && x >= sec.left) {
+                    lastTouchIsSecondary = true
+                    val pickedPkg = splitCompositor.hitTestRightPickerApp(x, y)
+                    val ctx = appContext
+                    if (pickedPkg != null && ctx != null) {
+                        selectSecondaryApp(ctx, pickedPkg)
+                    }
+                    return
+                }
+            } else {
+                // Single-pane mode with Left Picker open
+                if (splitCompositor.showLeftPicker) {
+                    lastTouchIsSecondary = false
+                    val pickedPkg = splitCompositor.hitTestLeftPickerApp(x, y)
+                    val ctx = appContext
+                    if (pickedPkg != null && ctx != null) {
+                        selectPrimaryApp(ctx, pickedPkg)
+                    }
+                    return
                 }
             }
-            StageBridgeMode.LOCAL_WIRELESS_ADB -> {
-                val id = _state.value.activeDisplayId.coerceAtLeast(0)
-                scope.launch { localAdb.execShell("input -d $id tap ${x.toInt()} ${y.toInt()}") }
+        }
+
+        // If bridge is not connected yet, tapping the car surface retries connecting automatically
+        if (!_state.value.isBound && !_state.value.isBinding) {
+            appContext?.let { connect(it) }
+        }
+
+        val svc = shizukuService
+        if (svc != null) {
+            if (bounds != null && sec != null && x >= sec.left) {
+                seamDragArmed = false
+                lastTouchIsSecondary = true
+                val (mx, my) = splitCompositor.mapTouchToSecondary(x, y)
+                scope.launch {
+                    runCatching { svc.injectTapOnSecondary(mx, my) }
+                }
+            } else {
+                seamDragArmed = false
+                lastTouchIsSecondary = false
+                val (mx, my) = if (bounds != null) {
+                    splitCompositor.mapTouchToPrimary(x, y)
+                } else {
+                    Pair(x, y)
+                }
+                scope.launch {
+                    runCatching { svc.injectTap(mx, my) }
+                }
             }
+            return
+        }
+
+        val id = _state.value.activeDisplayId
+        if (id > 0 && _state.value.config.bridgeMode == StageBridgeMode.LOCAL_WIRELESS_ADB) {
+            scope.launch { localAdb.execShell(appContext, "input -d $id tap ${x.toInt()} ${y.toInt()}") }
         }
     }
 
@@ -639,13 +1340,17 @@ object CarStageBridge {
             return
         }
         val svc = shizukuService ?: return
-        if (_state.value.config.bridgeMode != StageBridgeMode.SHIZUKU) return
 
         val bounds = splitCompositor.currentBounds
         val sec = bounds?.secondary
         val useSecondary = sec != null && lastTouchIsSecondary
-        val paneW = (if (useSecondary) sec!!.width() else bounds?.primary?.width() ?: carWidth).toFloat()
-        val paneH = (if (useSecondary) sec!!.height() else bounds?.primary?.height() ?: carHeight).toFloat()
+        val (bufW, bufH) = if (useSecondary) {
+            splitCompositor.currentSecondaryBufferSize
+        } else {
+            splitCompositor.currentPrimaryBufferSize
+        }
+        val paneW = bufW.coerceAtLeast(160).toFloat()
+        val paneH = bufH.coerceAtLeast(160).toFloat()
 
         touchHandler.removeCallbacks(endScrollRunnable)
 
@@ -683,7 +1388,6 @@ object CarStageBridge {
             splitCompositor.setDraggingSeam(false)
         }
         val svc = shizukuService ?: return
-        if (_state.value.config.bridgeMode != StageBridgeMode.SHIZUKU) return
         if (scrollActive) finishScrollGesture()
 
         val bounds = splitCompositor.currentBounds
@@ -720,43 +1424,43 @@ object CarStageBridge {
     }
 
     /**
-     * Cleanly resizes both VirtualDisplays and ImageReaders with adaptive DPI
-     * to match the user's custom dragged ratio so apps re-layout sharply without distortion.
+     * Cleanly resizes both VirtualDisplays and SurfaceTexture buffers in-place with adaptive DPI
+     * to match the user's custom dragged ratio at exact 1:1 pixel resolution so apps re-layout sharply without distortion.
      */
     private fun commitCustomSplitRatio(ratio: Float) {
-        val svc = shizukuService ?: return
         val targetSurface = carSurface?.takeIf { it.isValid } ?: return
         val cfg = _state.value.config
-        if (_state.value.config.bridgeMode != StageBridgeMode.SHIZUKU || !cfg.layoutPreset.isSplit) return
+        if (!cfg.layoutPreset.isSplit) return
 
-        val seamPx = 4
-        val leftW = ((carWidth - seamPx) * ratio).toInt().coerceIn(240, carWidth - 240)
-        val customBounds = StageSlotBounds(
-            primary = Rect(0, 0, leftW, carHeight),
-            secondary = Rect(leftW + seamPx, 0, carWidth, carHeight)
-        )
-        val secRect = customBounds.secondary!!
-        val primaryDpi = CarStageLayoutEngine.computeSlotDpi(leftW, carHeight, carDpi, isSplit = true)
-        val secondaryDpi = CarStageLayoutEngine.computeSlotDpi(secRect.width(), carHeight, carDpi, isSplit = true)
+        val viewports = splitCompositor.reconfigureLayoutInPlace(split = true, ratio = ratio) ?: return
+        val pVp = viewports.first
+        val sVp = viewports.second
+        val svc = shizukuService ?: return
 
-        val wasShowingPicker = splitCompositor.showRightPicker
-        splitCompositor.start(targetSurface, customBounds, ratio)
-        val primaryId = runCatching {
-            svc.startStageDisplay(splitCompositor.primarySurface, leftW, carHeight, primaryDpi, cfg.preferVirtualDevice)
-        }.getOrDefault(-1)
-        val secId = runCatching {
-            svc.startSecondaryDisplay(splitCompositor.secondarySurface, secRect.width(), carHeight, secondaryDpi)
-        }.getOrDefault(-1)
-
-        val primaryPkg = _state.value.activePackage ?: cfg.primaryPackage
-        if (primaryId > 0 && primaryPkg.isNotBlank()) {
-            runCatching { svc.launchOrMoveApp(primaryPkg, true) }
-        }
-        val ctx = appContext
-        if (wasShowingPicker && ctx != null) {
-            openRightInSurfacePicker(ctx)
-        } else if (secId > 0 && cfg.secondaryPackage.isNotBlank()) {
-            runCatching { svc.launchOrMoveSecondaryApp(cfg.secondaryPackage, true) }
+        scope.launch {
+            val isSplit = sVp != null
+            val primaryDpi = CarStageLayoutEngine.computeSlotDpi(pVp.width(), pVp.height(), carDpi, isSplit = isSplit)
+            val resizedPrimary = runCatching {
+                svc.resizeStageDisplay(pVp.width(), pVp.height(), primaryDpi)
+            }.getOrDefault(false)
+            if (!resizedPrimary) {
+                startDisplayShizuku(carWidth, carHeight, carDpi)
+                return@launch
+            }
+            if (sVp != null) {
+                val secondaryDpi = CarStageLayoutEngine.computeSlotDpi(sVp.width(), sVp.height(), carDpi, isSplit = true)
+                val resizedSec = runCatching {
+                    svc.resizeSecondaryDisplay(sVp.width(), sVp.height(), secondaryDpi)
+                }.getOrDefault(false)
+                if (!resizedSec) {
+                    val secId = runCatching {
+                        svc.startSecondaryDisplay(splitCompositor.secondarySurface, sVp.width(), sVp.height(), secondaryDpi)
+                    }.getOrDefault(-1)
+                    if (secId > 0 && cfg.secondaryPackage.isNotBlank() && !splitCompositor.showRightPicker) {
+                        runCatching { svc.launchOrMoveSecondaryApp(cfg.secondaryPackage, true) }
+                    }
+                }
+            }
         }
     }
 
@@ -775,6 +1479,7 @@ object CarStageBridge {
         }
     }
 
+    @Synchronized
     private fun startDisplayShizuku(width: Int, height: Int, dpi: Int): Int {
         val svc = shizukuService ?: return -1
         val cfg = _state.value.config
@@ -786,54 +1491,116 @@ object CarStageBridge {
 
         return try {
             val displayId = if (targetSurface != null && cfg.layoutPreset.isSplit) {
-                val bounds = CarStageLayoutEngine.computeSlots(fullW, fullH, cfg.layoutPreset)
-                val secRect = bounds.secondary!!
-                val primaryDpi = CarStageLayoutEngine.computeSlotDpi(
-                    bounds.primary.width(), bounds.primary.height(), d, isSplit = true
+                val rawBounds = CarStageLayoutEngine.computeSlots(fullW, fullH, cfg.layoutPreset)
+                splitCompositor.start(
+                    carSurface = targetSurface,
+                    slotBounds = rawBounds,
+                    ratio = cfg.layoutPreset.primaryRatio,
+                    fullWidth = fullW,
+                    fullHeight = fullH,
+                    preservePickers = true
                 )
-                val secondaryDpi = CarStageLayoutEngine.computeSlotDpi(
-                    secRect.width(), secRect.height(), d, isSplit = true
+                val (pBufW, pBufH) = splitCompositor.currentPrimaryBufferSize
+                val (sBufW, sBufH) = splitCompositor.currentSecondaryBufferSize
+                val effectiveSplit = splitCompositor.currentBounds?.secondary != null
+                if (effectiveSplit) {
+                    val primaryDpi = CarStageLayoutEngine.computeSlotDpi(pBufW, pBufH, d, isSplit = true)
+                    val secondaryDpi = CarStageLayoutEngine.computeSlotDpi(sBufW, sBufH, d, isSplit = true)
+                    val primaryId = svc.startStageDisplay(
+                        splitCompositor.primarySurface,
+                        pBufW,
+                        pBufH,
+                        primaryDpi,
+                        preferVd
+                    )
+                    val secId = svc.startSecondaryDisplay(
+                        splitCompositor.secondarySurface,
+                        sBufW,
+                        sBufH,
+                        secondaryDpi
+                    )
+                    displayAttachedToCarSurface = primaryId > 0
+                    appendLog(
+                        "Split compositor started (1:1): leftId=$primaryId (${pBufW}x${pBufH}@${primaryDpi}dpi), " +
+                            "rightId=$secId (${sBufW}x${sBufH}@${secondaryDpi}dpi)"
+                    )
+                    val ctx = appContext
+                    val primaryPkg = _state.value.activePackage ?: cfg.primaryPackage
+                    if (primaryPkg.isBlank() && ctx != null) {
+                        openLeftInSurfacePicker(ctx)
+                    } else if (primaryPkg.isNotBlank() && primaryId > 0) {
+                        splitCompositor.setLeftPicker(show = false)
+                        runCatching { svc.launchOrMoveApp(primaryPkg, cfg.moveExistingTask) }
+                    }
+                    if (cfg.secondaryPackage.isBlank() && ctx != null) {
+                        openRightInSurfacePicker(ctx)
+                    } else if (cfg.secondaryPackage.isNotBlank() && secId > 0) {
+                        splitCompositor.setRightPicker(show = false)
+                        val secOk = runCatching {
+                            svc.launchOrMoveSecondaryApp(cfg.secondaryPackage, cfg.moveExistingTask)
+                        }.getOrDefault(false)
+                        if (!secOk && ctx != null) {
+                            openRightInSurfacePicker(ctx)
+                        }
+                    }
+                    primaryId
+                } else {
+                    svc.stopSecondaryDisplay()
+                    val singleDpi = CarStageLayoutEngine.computeSlotDpi(pBufW, pBufH, d, isSplit = false)
+                    val primaryId = svc.startStageDisplay(
+                        splitCompositor.primarySurface,
+                        pBufW,
+                        pBufH,
+                        singleDpi,
+                        preferVd
+                    )
+                    displayAttachedToCarSurface = primaryId > 0
+                    val ctx = appContext
+                    val primaryPkg = _state.value.activePackage ?: cfg.primaryPackage
+                    if (primaryPkg.isBlank() && ctx != null) {
+                        openLeftInSurfacePicker(ctx)
+                    } else if (primaryPkg.isNotBlank() && primaryId > 0) {
+                        splitCompositor.setLeftPicker(show = false)
+                        runCatching { svc.launchOrMoveApp(primaryPkg, cfg.moveExistingTask) }
+                    }
+                    primaryId
+                }
+            } else if (targetSurface != null) {
+                svc.stopSecondaryDisplay()
+                val rawBounds = CarStageLayoutEngine.computeSlots(fullW, fullH, StageLayoutPreset.SINGLE)
+                splitCompositor.start(
+                    carSurface = targetSurface,
+                    slotBounds = rawBounds,
+                    ratio = 1.0f,
+                    fullWidth = fullW,
+                    fullHeight = fullH,
+                    preservePickers = true
                 )
-                splitCompositor.start(targetSurface, bounds, cfg.layoutPreset.primaryRatio)
+                val (pBufW, pBufH) = splitCompositor.currentPrimaryBufferSize
+                val singleDpi = CarStageLayoutEngine.computeSlotDpi(pBufW, pBufH, d, isSplit = false)
                 val primaryId = svc.startStageDisplay(
                     splitCompositor.primarySurface,
-                    bounds.primary.width(),
-                    bounds.primary.height(),
-                    primaryDpi,
+                    pBufW,
+                    pBufH,
+                    singleDpi,
                     preferVd
                 )
-                val secId = svc.startSecondaryDisplay(
-                    splitCompositor.secondarySurface,
-                    secRect.width(),
-                    secRect.height(),
-                    secondaryDpi
-                )
-                appendLog(
-                    "Split compositor started: leftId=$primaryId (${bounds.primary.width()}x${bounds.primary.height()}@${primaryDpi}dpi), " +
-                        "rightId=$secId (${secRect.width()}x${secRect.height()}@${secondaryDpi}dpi)"
-                )
-                // Always show left/right app picker grids whenever App 1 or App 2 is not chosen yet
+                displayAttachedToCarSurface = primaryId > 0
                 val ctx = appContext
                 val primaryPkg = _state.value.activePackage ?: cfg.primaryPackage
                 if (primaryPkg.isBlank() && ctx != null) {
                     openLeftInSurfacePicker(ctx)
-                }
-                if (cfg.secondaryPackage.isBlank() && ctx != null) {
-                    openRightInSurfacePicker(ctx)
-                } else if (cfg.secondaryPackage.isNotBlank()) {
-                    val secOk = runCatching {
-                        svc.launchOrMoveSecondaryApp(cfg.secondaryPackage, cfg.moveExistingTask)
-                    }.getOrDefault(false)
-                    if (!secOk && ctx != null) {
-                        openRightInSurfacePicker(ctx)
-                    }
+                } else if (primaryPkg.isNotBlank() && primaryId > 0) {
+                    splitCompositor.setLeftPicker(show = false)
+                    runCatching { svc.launchOrMoveApp(primaryPkg, cfg.moveExistingTask) }
                 }
                 primaryId
             } else {
+                displayAttachedToCarSurface = false
                 splitCompositor.stop()
                 svc.stopSecondaryDisplay()
                 val singleDpi = CarStageLayoutEngine.computeSlotDpi(fullW, fullH, d, isSplit = false)
-                svc.startStageDisplay(targetSurface, fullW, fullH, singleDpi, preferVd)
+                svc.startStageDisplay(null, fullW, fullH, singleDpi, preferVd)
             }
             val mode = svc.engineMode ?: "STOPPED"
             val err = svc.lastError ?: ""
@@ -853,42 +1620,56 @@ object CarStageBridge {
         }
     }
 
-    private fun startDisplayLocalAdb() {
-        scope.launch {
-            val out = localAdb.execShell("dumpsys display | grep -E 'mDisplayId=' | tail -n 1")
-            out.onSuccess { text ->
-                val parsedId = Regex("mDisplayId=(\\d+)").find(text)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-                _state.update {
-                    it.copy(
-                        activeDisplayId = parsedId,
-                        engineMode = "LOCAL_ADB",
-                        lastError = ""
-                    )
-                }
-                appendLog("Local ADB display ready (displayId=$parsedId)")
-            }.onFailure { err ->
-                _state.update { it.copy(lastError = err.message ?: "ADB shell failed") }
-                appendLog("Local ADB display check error: ${err.message}")
-            }
-        }
-    }
-
     fun launchOrMoveApp(packageName: String): Boolean {
-        return when (_state.value.config.bridgeMode) {
-            StageBridgeMode.SHIZUKU -> launchOrMoveShizuku(packageName)
-            StageBridgeMode.LOCAL_WIRELESS_ADB -> {
-                launchOrMoveLocalAdb(packageName)
-                true
-            }
+        val ctx = appContext
+        if (ctx != null) {
+            updateConfig(ctx) { cfg -> cfg.copy(primaryPackage = packageName) }
         }
+        splitCompositor.setLeftPicker(show = false)
+
+        // Never open Car Stage apps on the phone's Display 0 when Android Auto is not attached yet;
+        // queue the app so it projects onto Android Auto immediately upon CarStageCarAppService surface attach.
+        if (carSurface == null || carSurface?.isValid != true) {
+            _state.update { it.copy(activePackage = packageName, lastError = "") }
+            appendLog("Queued $packageName — will project onto Android Auto when Car Stage opens on car screen")
+            return true
+        }
+
+        val svc = shizukuService
+        if (svc != null && _state.value.activeDisplayId > 0 && displayAttachedToCarSurface) {
+            return launchOrMoveShizuku(packageName)
+        }
+
+        if (ctx != null) {
+            scope.launch {
+                val boundSvc = ensureBoundServiceBlocking(ctx)
+                if (boundSvc == null) {
+                    openLeftInSurfacePicker(ctx)
+                    return@launch
+                }
+                if (carSurface?.isValid == true && (_state.value.activeDisplayId <= 0 || !displayAttachedToCarSurface)) {
+                    startDisplayShizuku(carWidth, carHeight, carDpi)
+                }
+                val ok = launchOrMoveShizuku(packageName)
+                if (ok) {
+                    splitCompositor.setStatusBanner()
+                } else {
+                    openLeftInSurfacePicker(ctx)
+                }
+            }
+            return true
+        }
+        return false
     }
 
     private fun launchOrMoveShizuku(packageName: String): Boolean {
         val svc = shizukuService ?: return false
-        if (_state.value.activeDisplayId <= 0) {
-            val id = startDisplayShizuku(1280, 720, 240)
+        val hasCarSurface = carSurface?.isValid == true
+        if (_state.value.activeDisplayId <= 0 || (hasCarSurface && !displayAttachedToCarSurface)) {
+            val id = startDisplayShizuku(carWidth, carHeight, carDpi)
             if (id <= 0) return false
         }
+        splitCompositor.setLeftPicker(show = false)
         return try {
             val moveTask = _state.value.config.moveExistingTask
             val ok = svc.launchOrMoveApp(packageName, moveTask)
@@ -899,31 +1680,12 @@ object CarStageBridge {
                     lastError = err
                 )
             }
-            appendLog("Shizuku launchOrMoveApp($packageName, moveTask=$moveTask) -> $ok")
+            appendLog("launchOrMoveApp($packageName, moveTask=$moveTask) -> $ok")
             ok
         } catch (t: Throwable) {
             _state.update { it.copy(lastError = t.message ?: "Launch failed") }
             appendLog("launchOrMoveApp error: ${t.message}")
             false
-        }
-    }
-
-    private fun launchOrMoveLocalAdb(packageName: String) {
-        val displayId = _state.value.activeDisplayId.coerceAtLeast(0)
-        scope.launch {
-            val cmd = if (displayId > 0) {
-                "monkey -p $packageName -c android.intent.category.LAUNCHER 1 && am display move-stack 1 $displayId 2>/dev/null || am start --display $displayId -a android.intent.action.MAIN -c android.intent.category.LAUNCHER $packageName"
-            } else {
-                "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
-            }
-            val res = localAdb.execShell(cmd)
-            res.onSuccess {
-                _state.update { it.copy(activePackage = packageName, lastError = "") }
-                appendLog("Local ADB launched $packageName (displayId=$displayId)")
-            }.onFailure { err ->
-                _state.update { it.copy(lastError = err.message ?: "ADB launch failed") }
-                appendLog("Local ADB launch error: ${err.message}")
-            }
         }
     }
 

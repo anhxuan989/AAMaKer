@@ -60,6 +60,9 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
     private static final long CONTENT_SETTLE_MS = 150;
     // while the car shows AnyAuto: how often to ask whether the phone refused to stay dark
     private static final long FIGHT_CHECK_MS = 10_000;
+    // keep the display group awake across temporary OEM overlays (reverse camera, climate, car home)
+    private static final long SURFACE_HIDDEN_KEEP_MS = 5 * 60_000L;
+    private static final long FRAME_WATCHDOG_MS = 450L;
 
     public interface Listener {
         /** Main thread: {@link #problem()} or the navigation bar setting may have changed. */
@@ -140,6 +143,7 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
     private Rect forced;              // the preview's simulated dashboard card
     private final Rect content = new Rect();
     private final Rect navBar = new Rect(); // the car's navigation bar, or empty
+    private final Rect togglePill = new Rect(); // fixed top-left toggle pill when navBar is hidden
     private int navSkip;                    // px at its top without buttons (under Android Auto's button)
     private boolean navRight;
     private volatile Nav nav;
@@ -155,9 +159,11 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
     private long lastNudge;
     private float pushX, pushY;       // a touchpad finger's distance past the edge
     private boolean hold;             // the car shows AnyAuto's apps grid
+    private boolean keepWhileHidden;  // keeps display group awake while AA surface is temporarily covered
+    private boolean needsEnsureApp;   // verify task visibility/focus on display when surface returns
     private ComponentName app;        // what should be on the display
     private IDisplayService pushedTo; // the service the state below belongs to
-    private boolean pushedOn;
+    private boolean pushedSurface;
     private int pushedW, pushedH, pushedDpi;
     private boolean pushedKeep;
     private Boolean pushedKeyboard;   // keyboard on the display (true) or on the phone (false)
@@ -165,7 +171,17 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
     private int displayId = -1;
     private volatile ComponentName launched;
     private volatile Problem problem;
+    private volatile boolean released;
     private final Runnable applyContent = this::applyContent;
+    private final Runnable expireHiddenKeep = () -> {
+        if (screen == null && !hold) {
+            keepWhileHidden = false;
+            sync();
+        }
+    };
+    private final Runnable frameWatchdog = this::checkFrameAfterResume;
+    // guards the shared IDisplayService singleton across rapid AnySession teardown/recreate cycles
+    private static volatile Mirror activeCarInstance;
     // a car Mirror has the display right now; the phone preview stays out of its way
     private static volatile Mirror carShowing;
     private static final CopyOnWriteArrayList<Runnable> carListeners = new CopyOnWriteArrayList<>();
@@ -174,6 +190,11 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
         this.context = context.getApplicationContext();
         this.listener = listener;
         this.car = car;
+        if (car) {
+            synchronized (Mirror.class) {
+                activeCarInstance = this;
+            }
+        }
         compositor = new Compositor(this.context);
         thread.start();
         io = new Handler(thread.getLooper());
@@ -212,19 +233,80 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
 
     /** A new or changed screen surface (size or dpi), from the main thread. */
     public void surface(Surface s, int w, int h, int d) {
+        if (s == null || !s.isValid()) return;
         io.post(() -> {
+            if (released || !s.isValid()) return;
             if (screen != s) {
                 compositor.detach();
-                drop(screen);
             }
             screen = s;
             screenW = w;
             screenH = h;
             dpi = d;
+            if (car) {
+                keepWhileHidden = true;
+                io.removeCallbacks(expireHiddenKeep);
+            }
+            needsEnsureApp = true;
             compositor.attach(s, w, h);
             io.removeCallbacks(applyContent);
             applyContent();
+            scheduleFrameWatchdog();
         });
+    }
+
+    /**
+     * Called when {@code MirrorScreen} transitions back to STARTED/RESUMED (including after car
+     * system overlays that pause Android Auto without destroying its SurfaceContainer).
+     */
+    public void screenResumed() {
+        io.post(() -> {
+            if (released) return;
+            if (car) {
+                keepWhileHidden = true;
+                io.removeCallbacks(expireHiddenKeep);
+            }
+            needsEnsureApp = true;
+            if (screen != null && screen.isValid()) {
+                compositor.poke();
+                scheduleFrameWatchdog();
+            }
+            sync();
+        });
+    }
+
+    private void scheduleFrameWatchdog() {
+        io.removeCallbacks(frameWatchdog);
+        io.postDelayed(frameWatchdog, FRAME_WATCHDOG_MS);
+    }
+
+    private void checkFrameAfterResume() {
+        if (released || screen == null || !screen.isValid()) return;
+        compositor.poke();
+        if (launched == null || compositor.hasFrame()) return;
+        IDisplayService s = pushedTo;
+        if (s == null || displayId < 0) return;
+        try {
+            String r = s.ensureApp(launched, true);
+            if ("no display".equals(r)) {
+                displayId = -1;
+                pushedSurface = false;
+                launched = null;
+                sync();
+                return;
+            }
+            int w = content.width(), h = content.height();
+            if (!compositor.hasFrame() && w > 0 && h > 160) {
+                s.resize(w, h - 1, dpi);
+                io.postDelayed(() -> {
+                    if (!released && content.width() == w && content.height() == h) {
+                        call(sv -> sv.resize(w, h, dpi));
+                    }
+                }, 50L);
+            }
+        } catch (RemoteException e) {
+            lost(s);
+        }
     }
 
     /** The car's visible area (not covered right now) changed. */
@@ -262,9 +344,19 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
         touch.cancel();
         CountDownLatch done = new CountDownLatch(1);
         io.post(() -> {
+            io.removeCallbacks(frameWatchdog);
             compositor.detach();
-            drop(screen);
             screen = null;
+            visible.setEmpty();
+            if (screenW > 0 && screenH > 0
+                    && (stable.width() < screenW * 0.5f || stable.height() < screenH * 0.5f)) {
+                stable.setEmpty();
+            }
+            if (car && !released) {
+                keepWhileHidden = true;
+                io.removeCallbacks(expireHiddenKeep);
+                io.postDelayed(expireHiddenKeep, SURFACE_HIDDEN_KEEP_MS);
+            }
             // the template is gone, and pan mode with it: no tap at the pointer
             panning = false;
             io.removeCallbacks(pointerClick);
@@ -319,10 +411,23 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
         });
     }
 
-    /** A tap at a point of the screen surface: the navigation bar's, or the app's (worker thread). */
+    /** A tap at a point of the screen surface: the navigation bar's, top-left pill's, or the app's (worker thread). */
     private void tap(float x, float y) {
-        if (navBar.contains((int) x, (int) y)) navTap(Compositor.navButton(navBar, navSkip, dpi, y));
-        else if (content.contains((int) x, (int) y)) touch.click(x - content.left, y - content.top);
+        if (navBar.contains((int) x, (int) y)) {
+            navTap(Compositor.navButton(navBar, navSkip, dpi, y));
+        } else if (!togglePill.isEmpty() && isNearTogglePill(x, y)) {
+            Prefs.setNavBar(context, true);
+            applyContent();
+            main.post(listener::onMirrorChanged);
+        } else if (content.contains((int) x, (int) y)) {
+            touch.click(x - content.left, y - content.top);
+        }
+    }
+
+    private boolean isNearTogglePill(float x, float y) {
+        int pad = Math.round(8f * Math.max(1f, dpi / 160f));
+        return x >= togglePill.left - pad && x <= togglePill.right + pad
+                && y >= togglePill.top - pad && y <= togglePill.bottom + pad;
     }
 
     /**
@@ -401,10 +506,11 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
         if (px >= 0) compositor.cursor(px, py, on);
     }
 
-    /** The pointer goes over the app and the navigation bar, a little inside the screen's edges. */
+    /** The pointer goes over the app, the navigation bar, and the collapsed top-left pill. */
     private Rect pointerArea() {
         Rect r = new Rect(content);
         if (!navBar.isEmpty()) r.union(navBar);
+        if (!togglePill.isEmpty()) r.union(togglePill);
         int in = Math.round(POINTER_INSET_DP * dpi / 160f);
         if (r.width() > 4 * in && r.height() > 4 * in) {
             r.inset(r.left <= 0 ? in : 0, r.top <= 0 ? in : 0);
@@ -698,12 +804,29 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
 
     /** Closes the display and stops the worker. */
     public void release() {
+        released = true;
+        final boolean shouldCloseDisplay;
+        synchronized (Mirror.class) {
+            if (car) {
+                shouldCloseDisplay = (activeCarInstance == this);
+                if (activeCarInstance == this) activeCarInstance = null;
+            } else {
+                shouldCloseDisplay = (activeCarInstance == null);
+            }
+        }
         Shell.removeListener(this);
         if (carShowing == this) setCarShowing(null);
         io.post(() -> {
+            io.removeCallbacks(expireHiddenKeep);
+            io.removeCallbacks(frameWatchdog);
+            io.removeCallbacks(checkFights);
             touch.cancel();
             IDisplayService s = pushedTo;
-            if (s != null) {
+            boolean canCloseNow;
+            synchronized (Mirror.class) {
+                canCloseNow = shouldCloseDisplay && activeCarInstance == null;
+            }
+            if (s != null && canCloseNow) {
                 try {
                     s.close();
                 } catch (RemoteException ignore) {
@@ -712,7 +835,6 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
             }
             compositor.detach();
             compositor.release();
-            drop(screen);
             screen = null;
             thread.quitSafely();
         });
@@ -720,6 +842,7 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
 
     /** Stops the worker without touching the display (a preview that never used it). */
     public void releaseQuietly() {
+        released = true;
         Shell.removeListener(this);
         compositor.release();
         thread.quitSafely();
@@ -828,11 +951,22 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
                     + (right ? " (right, buttons from +" + skip + ")" : " (left)")));
         }
         compositor.nav(navBar, navSkip, navRight, launched != null);
+        Rect pill = new Rect();
+        if (car && bar.isEmpty() && r.width() >= screenW * 0.8f) {
+            Rect visBase = Prefs.fullScreen(context) ? r
+                    : (!visible.isEmpty() && full.contains(visible) ? visible
+                    : (!stable.isEmpty() && full.contains(stable) ? stable : r));
+            pill.set(Compositor.computeTogglePillRect(visBase, dpi));
+        }
+        togglePill.set(pill);
+        compositor.togglePill(togglePill);
         if (!r.equals(content)) {
             content.set(r);
             Log.i(TAG, "content " + content.toShortString() + " of " + screenW + "x" + screenH);
             compositor.content(content, dpi);
             touch.area(content.width(), content.height(), dpi, null);
+        } else if (screen != null && screen.isValid()) {
+            compositor.poke();
         }
         if (px >= 0) showPointer(pointerShown); // still inside the app and the bar
         sync();
@@ -878,9 +1012,15 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
     }
 
     private void sync() {
+        sync(false);
+    }
+
+    private void sync(boolean retrying) {
+        if (released) return;
         IDisplayService s = Shell.service();
         if (s == null) {
             pushedTo = null;
+            pushedSurface = false;
             displayId = -1;
             setProblem(shellProblem(Shell.state()));
             return;
@@ -888,7 +1028,7 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
         if (s != pushedTo) {
             // a new service process: nothing of ours is on it yet
             pushedTo = s;
-            pushedOn = false;
+            pushedSurface = false;
             pushedKeep = false;
             pushedKeyboard = null;
             pushedPhoneOn = null;
@@ -900,12 +1040,21 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
                 setProblem(null); // no surface yet
                 return;
             }
-            boolean on = screen != null;
+            boolean keep = (screen != null || hold || (car && keepWhileHidden)) && !released;
+            if (car && keep && !pushedKeep) {
+                pushedKeep = true;
+                s.keepRunning(true);
+                setCarShowing(this);
+                io.removeCallbacks(checkFights);
+                io.postDelayed(checkFights, FIGHT_CHECK_MS);
+            }
             int w = content.width(), h = content.height();
-            if (displayId < 0 || on != pushedOn || w != pushedW || h != pushedH || dpi != pushedDpi) {
-                // without a screen the display gets no surface: it pauses instead of drawing for nobody
-                displayId = s.show(on ? compositor.input() : null, w, h, dpi);
-                pushedOn = on;
+            // Keep compositor.input() bound to the VirtualDisplay even when the car surface is
+            // temporarily hidden (reverse camera / OEM car UI) so the VirtualDisplay never drops
+            // to Display.STATE_OFF and the projected app never loses its SurfaceView/GL state.
+            if (displayId < 0 || !pushedSurface) {
+                displayId = s.show(compositor.input(), w, h, dpi);
+                pushedSurface = displayId >= 0;
                 pushedW = w;
                 pushedH = h;
                 pushedDpi = dpi;
@@ -916,10 +1065,28 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
                             : new Problem("Can't make the car display", s.lastError()));
                     return;
                 }
-                pushedKeyboard = null; // a new display, or a new size: say it again
+                pushedKeyboard = null; // a new display: apply IME policy
                 Log.i(TAG, s.info());
-                // for the phone's Home screen: does this phone's screen go dark in the car?
                 Prefs.setPhoneGroup(context, s.phoneGroup());
+                if (car && keep) tellDark(s);
+            } else if (w != pushedW || h != pushedH || dpi != pushedDpi) {
+                int resizedId = s.resize(w, h, dpi);
+                if (resizedId < 0) {
+                    // Display was invalidated externally: recreate immediately
+                    displayId = s.show(compositor.input(), w, h, dpi);
+                    pushedSurface = displayId >= 0;
+                    launched = null;
+                    if (displayId < 0) {
+                        setProblem(new Problem("Can't make the car display", s.lastError()));
+                        return;
+                    }
+                    pushedKeyboard = null;
+                } else {
+                    displayId = resizedId;
+                }
+                pushedW = w;
+                pushedH = h;
+                pushedDpi = dpi;
             }
             // the car: where the setting says; the preview: on the phone, since a finger on the
             // phone takes the focus and would close a keyboard on the display (DisplayService)
@@ -933,7 +1100,6 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
                 s.phoneScreenOn(phoneOn);
                 pushedPhoneOn = phoneOn;
             }
-            boolean keep = screen != null || hold;
             if (car && pushedKeep != keep) {
                 pushedKeep = keep;
                 s.keepRunning(keep);
@@ -956,8 +1122,33 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
                     return;
                 }
                 launched = app;
+                needsEnsureApp = false;
                 Log.i(TAG, "opened " + app.flattenToShortString() + " on display " + displayId);
                 compositor.nav(navBar, navSkip, navRight, true);
+            } else if (app != null && needsEnsureApp && screen != null) {
+                needsEnsureApp = false;
+                String r = s.ensureApp(app, !compositor.hasFrame());
+                if (r == null) {
+                    r = s.launch(app);
+                }
+                if ("no display".equals(r) && !retrying) {
+                    Log.w(TAG, "virtual display was lost while hidden; recreating now");
+                    displayId = -1;
+                    pushedSurface = false;
+                    launched = null;
+                    sync(true);
+                    return;
+                }
+                if ("ok".equals(r)) {
+                    launched = app;
+                    compositor.nav(navBar, navSkip, navRight, true);
+                } else {
+                    String lr = s.launch(app);
+                    if ("ok".equals(lr)) {
+                        launched = app;
+                        compositor.nav(navBar, navSkip, navRight, true);
+                    }
+                }
             }
             if (launched == null) compositor.nav(navBar, navSkip, navRight, false);
             setProblem(null);
@@ -1007,13 +1198,10 @@ public final class Mirror implements Touch.Sink, Shell.Listener {
     private void lost(IDisplayService s) {
         Log.w(TAG, "display service died");
         pushedTo = null;
+        pushedSurface = false;
         displayId = -1;
         Shell.lost(s);
         setProblem(shellProblem(Shell.state()));
-    }
-
-    private void drop(Surface s) {
-        if (s != null && car) s.release();
     }
 
     private void setProblem(Problem p) {

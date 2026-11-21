@@ -57,7 +57,7 @@ object CarStagePrefs {
             primaryPackage = prefs.getString(KEY_PRIMARY_PACKAGE, "") ?: "",
             secondaryPackage = prefs.getString(KEY_SECONDARY_PACKAGE, "") ?: "",
             layoutPreset = StageLayoutPreset.fromKey(prefs.getString(KEY_LAYOUT_PRESET, StageLayoutPreset.SPLIT_50_50.key)),
-            dockEdge = StageDockEdge.fromKey(prefs.getString(KEY_DOCK_EDGE, StageDockEdge.LEFT.key)),
+            dockEdge = StageDockEdge.LEFT,
             autoHideSeconds = prefs.getInt(KEY_AUTO_HIDE_SECONDS, 4).coerceIn(3, 10),
             preferVirtualDevice = prefs.getBoolean(KEY_PREFER_VIRTUAL_DEVICE, false),
             moveExistingTask = prefs.getBoolean(KEY_MOVE_EXISTING_TASK, true),
@@ -77,7 +77,7 @@ object CarStagePrefs {
             .putString(KEY_PRIMARY_PACKAGE, config.primaryPackage)
             .putString(KEY_SECONDARY_PACKAGE, config.secondaryPackage)
             .putString(KEY_LAYOUT_PRESET, config.layoutPreset.key)
-            .putString(KEY_DOCK_EDGE, config.dockEdge.key)
+            .putString(KEY_DOCK_EDGE, StageDockEdge.LEFT.key)
             .putInt(KEY_AUTO_HIDE_SECONDS, config.autoHideSeconds)
             .putBoolean(KEY_PREFER_VIRTUAL_DEVICE, config.preferVirtualDevice)
             .putBoolean(KEY_MOVE_EXISTING_TASK, config.moveExistingTask)

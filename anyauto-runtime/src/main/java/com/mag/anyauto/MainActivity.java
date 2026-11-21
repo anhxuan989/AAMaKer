@@ -249,7 +249,6 @@ public final class MainActivity extends Activity implements Shell.Listener {
         menu.add(0, MENU_PHONE_ON, 1, "Keep the phone's screen on").setCheckable(true)
                 .setChecked(Prefs.keepPhoneOn(this));
         menu.add(0, MENU_KEYBOARD, 2, "Keyboard");
-        menu.add(0, MENU_NAV_SIDE, 3, "Navigation bar side");
         if (!TargetAppConfig.isDedicated(this)) {
             menu.add(0, MENU_AUTO_UPDATE, 4, "Check for updates automatically").setCheckable(true)
                     .setChecked(Prefs.autoUpdate(this));

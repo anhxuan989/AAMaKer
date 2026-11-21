@@ -17,7 +17,7 @@ import java.io.File
 class MultiModeInstallerManager(private val context: Context) {
 
     private val standardInstaller = StandardSessionInstaller(context)
-    val shizukuInstaller = ShizukuInstaller()
+    val shizukuInstaller = ShizukuInstaller(context)
     val rootInstaller = RootInstaller()
 
     fun isXposedModuleActive(): Boolean = false

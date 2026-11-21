@@ -342,6 +342,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                                                     val dstRect = Rect(0, 0, surfaceWidth, surfaceHeight)
                                                     surfaceCanvas.drawBitmap(safeBmp, srcRect, dstRect, null)
                                                 }
+                                                drawTopLeftControlsOnCanvas(surfaceCanvas)
                                                 lastGpuMirrorFrameMs = SystemClock.uptimeMillis()
                                             }
                                         }
@@ -375,13 +376,22 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                     synchronized(gpuPrimaryBitmapLock) {
                         val safeBmp = lastGpuPrimaryBitmap ?: primaryBmp
                         if (!safeBmp.isRecycled) {
-                            dualController.compositeDualFrame(
-                                surfaceCanvas = surfaceCanvas,
-                                primaryBitmap = safeBmp,
-                                primaryValidWidth = lastGpuPrimaryWidth.takeIf { it > 0 } ?: validW,
-                                primaryValidHeight = lastGpuPrimaryHeight.takeIf { it > 0 } ?: validH,
-                                isInteracting = isUserInteractingRecently()
-                            )
+                            val w = lastGpuPrimaryWidth.takeIf { it > 0 } ?: validW
+                            val h = lastGpuPrimaryHeight.takeIf { it > 0 } ?: validH
+                            if (dualController.isDualModeActive) {
+                                dualController.compositeDualFrame(
+                                    surfaceCanvas = surfaceCanvas,
+                                    primaryBitmap = safeBmp,
+                                    primaryValidWidth = w,
+                                    primaryValidHeight = h,
+                                    isInteracting = isUserInteractingRecently()
+                                )
+                            } else {
+                                val srcRect = Rect(0, 0, minOf(w, safeBmp.width), minOf(h, safeBmp.height))
+                                val dstRect = Rect(0, 0, surfaceWidth, surfaceHeight)
+                                surfaceCanvas.drawBitmap(safeBmp, srcRect, dstRect, null)
+                            }
+                            drawTopLeftControlsOnCanvas(surfaceCanvas)
                         }
                     }
                 } finally {
@@ -443,16 +453,60 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     private var cachedSplitInactiveCarIcon: CarIcon? = null
     private var cachedDimActiveCarIcon: CarIcon? = null
     private var cachedDimInactiveCarIcon: CarIcon? = null
+    @Volatile
+    private var carVisibleArea: Rect? = null
+
+    private var topLeftToggleRect = RectF()
+    private val topLeftActionHitBoxes = ArrayList<Pair<RectF, String>>(4)
+    private val topLeftIdleBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(120, 15, 23, 42)
+        style = Paint.Style.FILL
+    }
+    private val topLeftActiveBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(228, 15, 23, 42)
+        style = Paint.Style.FILL
+    }
+    private val topLeftStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(135, 56, 189, 248)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+    }
+    private val topLeftChipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(60, 255, 255, 255)
+        style = Paint.Style.FILL
+    }
+    private val topLeftLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#38BDF8")
+        strokeWidth = 3f
+        strokeCap = Paint.Cap.ROUND
+        style = Paint.Style.STROKE
+    }
+    private val topLeftTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        isFakeBoldText = true
+        textAlign = Paint.Align.CENTER
+    }
+
+    private fun repaintTopLeftControlsOnGpuSurfaceIfNeeded() {
+        val now = SystemClock.uptimeMillis()
+        val gpuBmp = lastGpuPrimaryBitmap
+        if (hasReceivedGpuPrimaryFrame &&
+            gpuBmp != null &&
+            !gpuBmp.isRecycled &&
+            (now - lastGpuMirrorFrameMs) < 2000L
+        ) {
+            postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
+        } else {
+            requestCoalescedFrameRender()
+        }
+    }
 
     @Volatile
     private var isActionStripExpanded: Boolean = false
     private val autoCollapseActionStripRunnable = Runnable {
         if (isActionStripExpanded) {
             isActionStripExpanded = false
-            try {
-                invalidate()
-            } catch (_: Throwable) {
-            }
+            repaintTopLeftControlsOnGpuSurfaceIfNeeded()
         }
     }
 
@@ -615,9 +669,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             !gpuBmp.isRecycled &&
             (now - lastGpuMirrorFrameMs) < (if (screenLocked) 750L else 1200L)
         if (gpuFresh && gpuBmp != null) {
-            if (dualController.isDualModeActive) {
-                postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
-            }
+            postDualGpuFrameToCarSurface(gpuBmp, lastGpuPrimaryWidth, lastGpuPrimaryHeight)
             return
         }
         mainHandler.removeCallbacks(lockScreenMirrorTicker)
@@ -847,6 +899,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                                 } else {
                                     surfaceCanvas.drawBitmap(bitmapToPost, 0f, 0f, null)
                                 }
+                                drawTopLeftControlsOnCanvas(surfaceCanvas)
                             } finally {
                                 currentOut.unlockCanvasAndPost(surfaceCanvas)
                             }
@@ -974,6 +1027,105 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         strokeWidth = 2f
     }
 
+    @Synchronized
+    private fun drawTopLeftControlsOnCanvas(canvas: Canvas) {
+        topLeftActionHitBoxes.clear()
+        val d = (surfaceDpi.toFloat() / 160f).coerceIn(1f, 3f)
+        val vis = carVisibleArea
+        val isInsetCard = vis != null && !vis.isEmpty &&
+            (vis.width() < surfaceWidth * 0.80f || vis.height() < surfaceHeight * 0.72f)
+        val originX = if (isInsetCard && vis != null) vis.left.toFloat() else 0f
+        val originY = if (isInsetCard && vis != null) vis.top.toFloat() else 0f
+        val margin = 10f * d
+        val startX = originX + margin
+        val startY = originY + margin
+
+        topLeftStrokePaint.strokeWidth = (1.5f * d).coerceAtLeast(1.5f)
+        topLeftLinePaint.strokeWidth = (2.2f * d).coerceAtLeast(2f)
+
+        if (!isActionStripExpanded) {
+            val btnSize = 36f * d
+            topLeftToggleRect = RectF(startX, startY, startX + btnSize, startY + btnSize)
+            val r = btnSize * 0.5f
+            canvas.drawRoundRect(topLeftToggleRect, r, r, topLeftIdleBgPaint)
+            canvas.drawRoundRect(topLeftToggleRect, r, r, topLeftStrokePaint)
+
+            val cx = topLeftToggleRect.centerX()
+            val cy = topLeftToggleRect.centerY()
+            val halfLine = 7.5f * d
+            val gapY = 5f * d
+            canvas.drawLine(cx - halfLine, cy - gapY, cx + halfLine, cy - gapY, topLeftLinePaint)
+            canvas.drawLine(cx - halfLine, cy, cx + halfLine, cy, topLeftLinePaint)
+            canvas.drawLine(cx - halfLine, cy + gapY, cx + halfLine, cy + gapY, topLeftLinePaint)
+            return
+        }
+
+        val lang = currentLang()
+        val splitLbl = when (lang) {
+            "vi" -> if (dualController.isDualModeActive) "1 MH" else "2 MH"
+            "zh" -> if (dualController.isDualModeActive) "单屏" else "分屏"
+            "ja" -> if (dualController.isDualModeActive) "1画面" else "2画面"
+            else -> if (dualController.isDualModeActive) "1x" else "2x"
+        }
+        val dimLbl = when (lang) {
+            "vi" -> if (PhoneScreenDimManager.isDimmed) "🔆 ĐT" else "🌙 ĐT"
+            "zh" -> if (PhoneScreenDimManager.isDimmed) "亮屏" else "息屏"
+            "ja" -> if (PhoneScreenDimManager.isDimmed) "ON" else "OFF"
+            else -> if (PhoneScreenDimManager.isDimmed) "🔆" else "🌙"
+        }
+        val items = listOf(
+            "collapse" to "✕",
+            "split" to splitLbl,
+            "dim" to dimLbl,
+            "back" to "◀"
+        )
+        val pad = 5f * d
+        val gap = 5f * d
+        val chipH = 32f * d
+        topLeftTextPaint.textSize = 12f * d
+
+        var totalW = pad * 2f + gap * (items.size - 1)
+        val chipWidths = FloatArray(items.size)
+        for (i in items.indices) {
+            val textW = topLeftTextPaint.measureText(items[i].second)
+            val cw = (textW + 18f * d).coerceAtLeast(36f * d)
+            chipWidths[i] = cw
+            totalW += cw
+        }
+        val totalH = pad * 2f + chipH
+        val barRect = RectF(startX, startY, startX + totalW, startY + totalH)
+        canvas.drawRoundRect(barRect, totalH * 0.5f, totalH * 0.5f, topLeftActiveBgPaint)
+        canvas.drawRoundRect(barRect, totalH * 0.5f, totalH * 0.5f, topLeftStrokePaint)
+
+        var curLeft = barRect.left + pad
+        val top = barRect.top + pad
+        for (i in items.indices) {
+            val (actionId, label) = items[i]
+            val cw = chipWidths[i]
+            val rect = RectF(curLeft, top, curLeft + cw, top + chipH)
+            topLeftActionHitBoxes.add(rect to actionId)
+            canvas.drawRoundRect(rect, chipH * 0.42f, chipH * 0.42f, topLeftChipPaint)
+            canvas.drawText(label, rect.centerX(), rect.centerY() + 4.5f * d, topLeftTextPaint)
+            curLeft += cw + gap
+        }
+    }
+
+    @Synchronized
+    private fun hitTestTopLeftControl(x: Float, y: Float): String? {
+        val d = (surfaceDpi.toFloat() / 160f).coerceIn(1f, 3f)
+        if (!isActionStripExpanded) {
+            val pad = 8f * d
+            val expanded = RectF(
+                topLeftToggleRect.left - pad,
+                topLeftToggleRect.top - pad,
+                topLeftToggleRect.right + pad,
+                topLeftToggleRect.bottom + pad
+            )
+            return if (expanded.contains(x, y)) "expand" else null
+        }
+        return topLeftActionHitBoxes.firstOrNull { (rect, _) -> rect.contains(x, y) }?.second
+    }
+
     private fun drawBottomLeftOpenAppButtonOnCanvas(
         canvas: Canvas,
         width: Int,
@@ -985,7 +1137,6 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
 
     private fun renderLoadingBannerOnSurface(surface: Surface, width: Int, height: Int) {
         if (! isSurfacePostInFlight.compareAndSet(false, true)) return
-        val iconBmp = getOrCreateOpenAppBitmap()
         val appName = try {
             val info = carContext.packageManager.getApplicationInfo(carContext.packageName, 0)
             carContext.packageManager.getApplicationLabel(info).toString()
@@ -1017,20 +1168,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
                         textAlign = Paint.Align.CENTER
                     }
                     canvas.drawText(msg, width / 2f, height / 2f, paint)
-                    val density = (surfaceDpi.toFloat() / 160f).coerceIn(1f, 3f)
-                    val btnSize = 38f * density
-                    val margin = 14f * density
-                    val pad = 8f * density
-                    val left = margin
-                    val top = height - margin - btnSize
-                    val right = left + btnSize
-                    val bottom = top + btnSize
-                    val rect = RectF(left, top, right, bottom)
-                    canvas.drawOval(rect, fabBgPaint)
-                    fabStrokePaint.strokeWidth = (1.5f * density).coerceAtLeast(1f)
-                    canvas.drawOval(rect, fabStrokePaint)
-                    val iconDst = RectF(left + pad, top + pad, right - pad, bottom - pad)
-                    canvas.drawBitmap(iconBmp, null, iconDst, null)
+                    drawTopLeftControlsOnCanvas(canvas)
                 } finally {
                     surface.unlockCanvasAndPost(canvas)
                 }
@@ -1716,58 +1854,12 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
             else -> if (PhoneScreenDimManager.isDimmed) "Wake Phone" else "Dim Phone"
         }
 
-        val projectionActionStrip = ActionStrip.Builder().apply {
-            if (!isActionStripExpanded) {
-                // Tối giản tối đa: chỉ giữ 1 nút icon menu gọn gàng ở mép màn hình khi ở trạng thái nghỉ
-                addAction(
-                    Action.Builder()
-                        .setIcon(getOrCreateMenuCarIcon())
-                        .setOnClickListener {
-                            isActionStripExpanded = true
-                            scheduleAutoCollapseActionStrip()
-                            invalidate()
-                        }
-                        .build()
-                )
-            } else {
-                // Trạng thái mở rộng: hiển thị nút thu gọn + các nút chức năng thiết yếu, tự động ẩn sau 5s
-                addAction(
-                    Action.Builder()
-                        .setIcon(getOrCreateCollapseCarIcon())
-                        .setTitle(collapseTitle)
-                        .setOnClickListener {
-                            isActionStripExpanded = false
-                            cancelAutoCollapseActionStrip()
-                            invalidate()
-                        }
-                        .build()
-                )
-                addAction(
-                    Action.Builder()
-                        .setIcon(getOrCreateSplitCarIcon(dualController.isDualModeActive))
-                        .setTitle(splitToggleTitle)
-                        .setOnClickListener {
-                            dualController.toggleDualMode()
-                            isActionStripExpanded = false
-                            cancelAutoCollapseActionStrip()
-                            invalidate()
-                        }
-                        .build()
-                )
-                addAction(
-                    Action.Builder()
-                        .setIcon(getOrCreateDimCarIcon(PhoneScreenDimManager.isDimmed))
-                        .setTitle(screenOffToggleTitle)
-                        .setOnClickListener {
-                            PhoneScreenDimManager.toggleDim(carContext.applicationContext)
-                            isActionStripExpanded = false
-                            cancelAutoCollapseActionStrip()
-                            invalidate()
-                        }
-                        .build()
-                )
-            }
-        }.build()
+        // Controls are strictly fixed at the top-left corner on the Surface canvas.
+        // Passing Action.PAN satisfies NavigationTemplate's mandatory ActionStrip check while
+        // Android Auto automatically filters out TYPE_PAN on touch head units (no overlapping dark circle).
+        val projectionActionStrip = ActionStrip.Builder()
+            .addAction(Action.PAN)
+            .build()
 
         val mapActionStrip = ActionStrip.Builder()
             .addAction(Action.PAN)
@@ -1976,16 +2068,56 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     override fun onClick(x: Float, y: Float) {
-        val displayId = activePrimaryDisplayId()
-        if (displayId == Display.DEFAULT_DISPLAY) return
         markUserInteraction()
         lastScrollFocusX = x
         mainHandler.removeCallbacks(finishScrollDragRunnable)
 
+        // 0. Always hit-test fixed Top-Left control pill/bar first
+        val topLeftHit = hitTestTopLeftControl(x, y)
+        if (topLeftHit != null) {
+            when (topLeftHit) {
+                "expand" -> {
+                    isActionStripExpanded = true
+                    scheduleAutoCollapseActionStrip()
+                    repaintTopLeftControlsOnGpuSurfaceIfNeeded()
+                }
+                "collapse" -> {
+                    isActionStripExpanded = false
+                    cancelAutoCollapseActionStrip()
+                    repaintTopLeftControlsOnGpuSurfaceIfNeeded()
+                }
+                "split" -> {
+                    isActionStripExpanded = false
+                    cancelAutoCollapseActionStrip()
+                    dualController.toggleDualMode()
+                    repaintTopLeftControlsOnGpuSurfaceIfNeeded()
+                }
+                "dim" -> {
+                    isActionStripExpanded = false
+                    cancelAutoCollapseActionStrip()
+                    PhoneScreenDimManager.toggleDim(carContext.applicationContext)
+                    repaintTopLeftControlsOnGpuSurfaceIfNeeded()
+                }
+                "back" -> {
+                    scheduleAutoCollapseActionStrip()
+                    if (dualController.isDualModeActive && isLastInteractionOnSecondary) {
+                        dualController.sendBackToSecondaryDisplay()
+                    } else {
+                        dispatchPrimaryBackKey()
+                    }
+                    repaintTopLeftControlsOnGpuSurfaceIfNeeded()
+                }
+            }
+            return
+        }
+
+        val displayId = activePrimaryDisplayId()
+        if (displayId == Display.DEFAULT_DISPLAY) return
+
         if (isActionStripExpanded) {
             isActionStripExpanded = false
             cancelAutoCollapseActionStrip()
-            invalidate()
+            repaintTopLeftControlsOnGpuSurfaceIfNeeded()
         }
 
         // 1. Dual-window isolation: completely decouple secondary pane from primary display
@@ -2028,7 +2160,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         if (isActionStripExpanded) {
             isActionStripExpanded = false
             cancelAutoCollapseActionStrip()
-            invalidate()
+            repaintTopLeftControlsOnGpuSurfaceIfNeeded()
         }
 
         if (dualController.isDualModeActive) {
@@ -2150,7 +2282,7 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         if (isActionStripExpanded) {
             isActionStripExpanded = false
             cancelAutoCollapseActionStrip()
-            invalidate()
+            requestCoalescedFrameRender()
         }
         if (focusX > 0f && focusY > 0f) {
             lastScrollFocusX = focusX
@@ -2972,6 +3104,10 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
         mainHandler.removeCallbacks(finishScrollDragRunnable)
         cancelAutoCollapseActionStrip()
         isActionStripExpanded = false
+        carVisibleArea = null
+        synchronized(this) {
+            topLeftActionHitBoxes.clear()
+        }
         carOutputSurface = null
         autoRetryLaunchCount = 0
         isSurfacePostInFlight.set(false)
@@ -3033,11 +3169,17 @@ class AAMakerProjectionScreen(carContext: CarContext) : Screen(carContext), Surf
     }
 
     override fun onVisibleAreaChanged(visibleArea: Rect) {
-
+        if (!visibleArea.isEmpty) {
+            carVisibleArea = Rect(visibleArea)
+            requestCoalescedFrameRender()
+        }
     }
 
     override fun onStableAreaChanged(stableArea: Rect) {
-
+        if (!stableArea.isEmpty && carVisibleArea == null) {
+            carVisibleArea = Rect(stableArea)
+            requestCoalescedFrameRender()
+        }
     }
 
     private fun renderFallbackBanner(surface: Surface, width: Int, height: Int) {

@@ -33,6 +33,8 @@ import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 
@@ -108,6 +110,8 @@ public final class DisplayService extends IDisplayService.Stub {
     private Method inject, setDisplayId;
 
     private final boolean inProcess;
+    private HandlerThread nudgeThread;
+    private Handler nudgeHandler;
 
     // Shizuku tries (Context) first, then the no-arg constructor.
     public DisplayService() {
@@ -120,11 +124,66 @@ public final class DisplayService extends IDisplayService.Stub {
 
     public DisplayService(Context base, boolean inProcess) {
         this.inProcess = inProcess;
+        if (!inProcess) {
+            unlockHiddenApiExemptions();
+            initApplicationSharedMemoryIfNeeded();
+        }
         if (inProcess && base != null) {
             this.context = base;
         } else {
             this.context = new ShellContext(base != null ? base : systemContext());
         }
+    }
+
+    private static void initApplicationSharedMemoryIfNeeded() {
+        try {
+            Class<?> asmClass = Class.forName("android.app.ApplicationSharedMemory");
+            try {
+                Method getInstance = asmClass.getDeclaredMethod("getInstance");
+                getInstance.setAccessible(true);
+                if (getInstance.invoke(null) != null) return;
+            } catch (Throwable ignored) {
+            }
+            Method create = asmClass.getDeclaredMethod("create");
+            create.setAccessible(true);
+            Method setInstance = asmClass.getDeclaredMethod("setInstance", asmClass);
+            setInstance.setAccessible(true);
+            Object instance = create.invoke(null);
+            if (instance != null) {
+                setInstance.invoke(null, instance);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void unlockHiddenApiExemptions() {
+        try {
+            Class<?> vmRuntimeClass = Class.forName("dalvik.system.VMRuntime");
+            Method getRuntime = vmRuntimeClass.getDeclaredMethod("getRuntime");
+            getRuntime.setAccessible(true);
+            Object runtime = getRuntime.invoke(null);
+            Method setExemptions = vmRuntimeClass.getDeclaredMethod("setHiddenApiExemptions", String[].class);
+            setExemptions.setAccessible(true);
+            setExemptions.invoke(runtime, (Object) new String[]{"L"});
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean isDisplayValidLocked() {
+        if (display == null || displayId < 0) return false;
+        Display d = display.getDisplay();
+        return d != null && d.isValid();
+    }
+
+    private void dropDeadDisplayLocked() {
+        if (display != null) {
+            try {
+                display.release();
+            } catch (Throwable ignored) {
+            }
+            display = null;
+        }
+        displayId = -1;
     }
 
     @Override
@@ -139,6 +198,10 @@ public final class DisplayService extends IDisplayService.Stub {
     public synchronized int show(Surface s, int w, int h, int d) {
         try {
             Surface old = surface;
+            if (display != null && !isDisplayValidLocked()) {
+                Log.w(TAG, "existing virtual display is no longer valid; recreating");
+                dropDeadDisplayLocked();
+            }
             if (display == null) {
                 display = create(w, h, d, s);
                 displayId = display.getDisplay().getDisplayId();
@@ -151,10 +214,20 @@ public final class DisplayService extends IDisplayService.Stub {
                         : " is in the phone's display group: the phone is kept awake while the car shows it"));
                 applyPhoneMode();
             } else {
-                display.setSurface(s);
+                boolean surfaceChanged = old != s;
+                if (surfaceChanged) {
+                    display.setSurface(s);
+                }
                 if (w > 0 && h > 0 && d > 0 && (w != width || h != height || d != dpi)) {
                     display.resize(w, h, d);
+                    keepLandscape();
                     Log.i(TAG, "display " + displayId + " resized to " + w + "x" + h + "@" + d);
+                }
+                if (s != null) {
+                    applyPhoneMode();
+                    if (surfaceChanged) {
+                        nudgeDisplayCompositeLocked();
+                    }
                 }
             }
             surface = s;
@@ -163,15 +236,242 @@ public final class DisplayService extends IDisplayService.Stub {
                 height = h;
                 dpi = d;
             }
-            // this process's copy of the previous surface (the app releases its own); the
-            // headless reader's surface belongs to the reader
-            if (old != null && old != s && (reader == null || old != reader.getSurface())) old.release();
+            // In Shizuku / remote binder mode, `old` is this process's unparcelled copy of the
+            // previous surface; in inProcess Direct Mode, `old` IS the caller's Compositor surface
+            // and MUST NOT be released here!
+            if (!inProcess && old != null && old != s && (reader == null || old != reader.getSurface())) {
+                old.release();
+            }
             return displayId;
         } catch (Throwable t) {
             lastError = "display: " + describe(t);
             Log.w(TAG, lastError, t);
             return -1;
         }
+    }
+
+    @Override
+    public synchronized int resize(int w, int h, int d) {
+        if (!isDisplayValidLocked()) {
+            dropDeadDisplayLocked();
+            return -1;
+        }
+        try {
+            if (w > 0 && h > 0 && d > 0 && (w != width || h != height || d != dpi)) {
+                display.resize(w, h, d);
+                width = w;
+                height = h;
+                dpi = d;
+                keepLandscape();
+                Log.i(TAG, "display " + displayId + " resized in-place to " + w + "x" + h + "@" + d);
+            }
+            return displayId;
+        } catch (Throwable t) {
+            lastError = "resize: " + describe(t);
+            Log.w(TAG, lastError, t);
+            return -1;
+        }
+    }
+
+    @Override
+    public synchronized String ensureApp(ComponentName component, boolean forceComposite) {
+        if (!isDisplayValidLocked()) {
+            dropDeadDisplayLocked();
+            return "no display";
+        }
+        if (component == null) return "ok";
+        keepLandscape();
+        applyPhoneMode();
+        String pkg = component.getPackageName();
+        try {
+            Object atm = Build.VERSION.SDK_INT >= 29
+                    ? Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null)
+                    : ActivityManager.class.getMethod("getService").invoke(null);
+            if (atm != null && restoreOrFocusTaskLocked(atm, pkg, displayId)) {
+                if (forceComposite) {
+                    nudgeDisplayCompositeLocked();
+                }
+                return "ok";
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "ensureApp task check: " + describe(t));
+        }
+        String r = launch(component);
+        if ("ok".equals(r) && forceComposite) {
+            nudgeDisplayCompositeLocked();
+        }
+        return r;
+    }
+
+    private boolean restoreOrFocusTaskLocked(Object atm, String packageName, int targetDisplayId) {
+        try {
+            List<?> tasks = queryAllTasks(atm);
+            if (tasks == null) return false;
+            java.lang.reflect.Field displayIdField = null;
+            int topTaskOnTarget = -1;
+            int matchedTaskId = -1;
+            int matchedDisplayId = Display.INVALID_DISPLAY;
+            boolean matchedHasTopActivity = false;
+
+            for (Object obj : tasks) {
+                if (!(obj instanceof android.app.TaskInfo)) continue;
+                android.app.TaskInfo info = (android.app.TaskInfo) obj;
+                if (info.taskId <= 0) continue;
+                if (displayIdField == null) {
+                    displayIdField = android.app.TaskInfo.class.getField("displayId");
+                }
+                int taskDispId = displayIdField.getInt(info);
+                if (topTaskOnTarget < 0 && taskDispId == targetDisplayId && info.topActivity != null) {
+                    topTaskOnTarget = info.taskId;
+                }
+                if (matchedTaskId < 0) {
+                    String topPkg = info.topActivity != null ? info.topActivity.getPackageName() : null;
+                    String basePkg = info.baseActivity != null ? info.baseActivity.getPackageName() : null;
+                    String intentPkg = info.baseIntent != null
+                            ? (info.baseIntent.getComponent() != null
+                                    ? info.baseIntent.getComponent().getPackageName()
+                                    : info.baseIntent.getPackage())
+                            : null;
+                    if (packageName.equals(topPkg) || packageName.equals(basePkg) || packageName.equals(intentPkg)) {
+                        matchedTaskId = info.taskId;
+                        matchedDisplayId = taskDispId;
+                        matchedHasTopActivity = info.topActivity != null;
+                    }
+                }
+            }
+
+            if (matchedTaskId <= 0 || !matchedHasTopActivity) {
+                return false;
+            }
+
+            if (matchedDisplayId != targetDisplayId || topTaskOnTarget != matchedTaskId) {
+                try {
+                    Method move = atm.getClass().getMethod("moveRootTaskToDisplay", int.class, int.class);
+                    move.invoke(atm, matchedTaskId, targetDisplayId);
+                    // Clear any leftover multi-window/freeform override bounds
+                    for (Method m : atm.getClass().getMethods()) {
+                        if ("resizeTask".equals(m.getName()) && m.getParameterTypes().length == 3
+                                && m.getParameterTypes()[0] == int.class
+                                && m.getParameterTypes()[1] == Rect.class
+                                && m.getParameterTypes()[2] == int.class) {
+                            try {
+                                m.invoke(atm, matchedTaskId, null, 0);
+                            } catch (Throwable ignored) {
+                            }
+                            break;
+                        }
+                    }
+                    focusRootTaskBestEffort(atm, matchedTaskId);
+                    keepLandscape();
+                    // Verify task actually landed on targetDisplayId
+                    List<?> verifyTasks = queryAllTasks(atm);
+                    if (verifyTasks != null && displayIdField != null) {
+                        for (Object obj : verifyTasks) {
+                            if (!(obj instanceof android.app.TaskInfo)) continue;
+                            android.app.TaskInfo info = (android.app.TaskInfo) obj;
+                            if (info.taskId == matchedTaskId) {
+                                if (displayIdField.getInt(info) == targetDisplayId && info.topActivity != null) {
+                                    Log.i(TAG, "restored live task " + matchedTaskId + " (" + packageName
+                                            + ") onto display " + targetDisplayId);
+                                    return true;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } catch (Throwable t) {
+                    Log.d(TAG, "moveRootTaskToDisplay fallback to launch: " + describe(t));
+                }
+                return false;
+            }
+
+            focusRootTaskBestEffort(atm, matchedTaskId);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static List<?> queryAllTasks(Object atm) {
+        for (Method m : atm.getClass().getMethods()) {
+            if (!"getTasks".equals(m.getName()) || m.getParameterTypes().length == 0) continue;
+            Class<?>[] p = m.getParameterTypes();
+            Object[] args = new Object[p.length];
+            boolean supported = true;
+            boolean seenFirstInt = false;
+            for (int i = 0; i < p.length; i++) {
+                if (p[i] == int.class) {
+                    if (!seenFirstInt) {
+                        seenFirstInt = true;
+                        args[i] = 80;
+                    } else {
+                        args[i] = Display.INVALID_DISPLAY;
+                    }
+                } else if (p[i] == boolean.class) {
+                    args[i] = false;
+                } else {
+                    supported = false;
+                    break;
+                }
+            }
+            if (!supported) continue;
+            try {
+                Object res = m.invoke(atm, args);
+                if (res instanceof List<?>) return (List<?>) res;
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static void focusRootTaskBestEffort(Object atm, int taskId) {
+        try {
+            atm.getClass().getMethod("setFocusedRootTask", int.class).invoke(atm, taskId);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Nudges SurfaceFlinger to immediately composite a fresh frame of the VirtualDisplay into its
+     * output SurfaceTexture even when the projected app UI is 100% static (no animation), without
+     * triggering any Activity configuration change or touch side effects.
+     */
+    private void nudgeDisplayCompositeLocked() {
+        final VirtualDisplay vd = display;
+        if (vd == null) return;
+        final Display d = vd.getDisplay();
+        if (d == null || !d.isValid()) return;
+        if (nudgeThread == null) {
+            nudgeThread = new HandlerThread("anyauto-nudge");
+            nudgeThread.start();
+            nudgeHandler = new Handler(nudgeThread.getLooper());
+        }
+        final Handler h = nudgeHandler;
+        h.post(() -> {
+            try {
+                if (!d.isValid()) return;
+                Context dispCtx = context.createDisplayContext(d);
+                WindowManager wm = dispCtx.getSystemService(WindowManager.class);
+                if (wm == null) return;
+                View pulse = new View(dispCtx);
+                pulse.setBackgroundColor(0x01000000);
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                        1, 1,
+                        WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        PixelFormat.TRANSLUCENT);
+                wm.addView(pulse, lp);
+                h.postDelayed(() -> {
+                    try {
+                        wm.removeViewImmediate(pulse);
+                    } catch (Throwable ignored) {
+                    }
+                }, 48L);
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     /** Tries the full flag set first and drops the newer, permission-gated flags one step at a time. */
@@ -692,7 +992,9 @@ public final class DisplayService extends IDisplayService.Stub {
             display = null;
         }
         displayId = -1;
-        if (surface != null && (reader == null || surface != reader.getSurface())) surface.release();
+        if (!inProcess && surface != null && (reader == null || surface != reader.getSurface())) {
+            surface.release();
+        }
         surface = null;
         if (reader != null) {
             reader.close();

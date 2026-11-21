@@ -86,6 +86,7 @@ object AAMakerPrivilegedDisplayServer {
     @JvmStatic
     fun main(args: Array<String>) {
         unlockHiddenApiExemptions()
+        com.aamaker.app.stage.CarStageDisplayServer.initApplicationSharedMemoryIfNeeded()
         val readyTokenPath = args.firstOrNull()
         try {
             @Suppress("DEPRECATION")
@@ -101,8 +102,13 @@ object AAMakerPrivilegedDisplayServer {
         panelPowerController = PhonePanelPowerController(systemContext)
         val serverBinder = ServerBinder(systemContext, mainHandler)
 
-        // Publish binder to AAMaKer app ContentProvider so AAMakerCentralBridgeExecutor can call it via IPC
-        publishBinderToAppProvider(systemContext, serverBinder, readyTokenPath)
+        // Publish binder asynchronously so Looper.loop() is immediately active on the main thread
+        Thread({
+            publishBinderToAppProvider(systemContext, serverBinder, readyTokenPath)
+        }, "PrivDisplay-BinderPublish").apply {
+            isDaemon = true
+            start()
+        }
 
         // Keep periodic heartbeat check: if AAMaKer is uninstalled or explicitly signals shutdown, clean up
         Looper.loop()
@@ -171,16 +177,29 @@ object AAMakerPrivilegedDisplayServer {
         binder: IBinder,
         tokenArg: String?
     ) {
-        try {
-            val bundle = android.os.Bundle().apply {
-                putBinder("server_binder", binder)
-                if (!tokenArg.isNullOrEmpty()) {
-                    putString("handshake_nonce", tokenArg)
-                }
+        val bundle = android.os.Bundle().apply {
+            putBinder("server_binder", binder)
+            if (!tokenArg.isNullOrEmpty()) {
+                putString("handshake_nonce", tokenArg)
             }
-            val uri = android.net.Uri.parse("content://com.aamaker.app.dualbridge")
-            context.contentResolver.call(uri, "register_privileged_server", null, bundle)
-        } catch (_: Throwable) {
+        }
+        val authority = "com.aamaker.app.dualbridge"
+        val method = "register_privileged_server"
+        for (attempt in 1..3) {
+            if (com.aamaker.app.stage.CarStageDisplayServer.callProviderViaActivityManager(authority, method, bundle)) {
+                return
+            }
+            val ok = try {
+                val uri = android.net.Uri.parse("content://$authority")
+                val reply = context.contentResolver.call(uri, method, null, bundle)
+                reply?.getBoolean("ok") == true
+            } catch (_: Throwable) {
+                false
+            }
+            if (ok) return
+            if (attempt < 3) {
+                runCatching { Thread.sleep(250L) }
+            }
         }
     }
 

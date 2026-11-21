@@ -32,7 +32,7 @@ public final class Shell {
     private static final long MANAGER_CACHE_MS = 3000;
     private static final int REQUEST = 4100;
     // bump whenever DisplayService changes, so Shizuku starts the new code instead of a running copy
-    private static final int SERVICE_VERSION = 14;
+    private static final int SERVICE_VERSION = 15;
 
     enum State { NO_SHIZUKU, NOT_RUNNING, OLD_SHIZUKU, NO_PERMISSION, CONNECTING, READY }
 
@@ -112,12 +112,34 @@ public final class Shell {
     }
 
     /**
+     * Called by AAMakerDualDisplayProvider when DisplayService is started via Local Wireless ADB app_process.
+     */
+    public static void onLocalAdbDisplayBinderRegistered(IBinder binder) {
+        if (binder == null || !binder.pingBinder()) return;
+        try {
+            binder.linkToDeath(() -> {
+                if (service != null && service.asBinder() == binder) {
+                    service = null;
+                    binding = false;
+                    changed();
+                }
+            }, 0);
+        } catch (Throwable ignored) {
+        }
+        service = IDisplayService.Stub.asInterface(binder);
+        binding = false;
+        Log.i(TAG, "display service connected via Local Wireless ADB");
+        changed();
+    }
+
+    /**
      * A live binder counts first, whoever sent it: Shizuku, a fork under another package name
      * (Shevery) or Sui, which has no app at all. Only without one does the installed app decide
      * between "not running" and "not installed".
      */
     static State state() {
         if (isDirectMode() || service != null) return State.READY;
+        if (binding) return State.CONNECTING;
         try {
             if (Shizuku.pingBinder()) {
                 if (Shizuku.isPreV11()) return State.OLD_SHIZUKU;
@@ -162,15 +184,67 @@ public final class Shell {
             return;
         }
         try {
-            if (!Shizuku.pingBinder() || Shizuku.isPreV11()
-                    || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            if (Shizuku.pingBinder() && !Shizuku.isPreV11()
+                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                binding = true;
+                Shizuku.bindUserService(args, connection);
                 return;
             }
-            binding = true;
-            Shizuku.bindUserService(args, connection);
         } catch (Throwable t) {
             binding = false;
             Log.w(TAG, "Shizuku bind failed", t);
+        }
+        // Fallback: if Shizuku is not running or not granted, try starting DisplayService via Local Wireless ADB
+        tryStartViaLocalWirelessAdb();
+    }
+
+    private static void tryStartViaLocalWirelessAdb() {
+        final Context ctx = app;
+        if (ctx == null || binding || service != null) return;
+        try {
+            final com.aamaker.core.installer.adb.LocalAdbConnectionManager adbMgr =
+                    com.aamaker.core.installer.adb.LocalAdbConnectionManager.getInstance(ctx);
+            if (!adbMgr.isConnected() && !adbMgr.hasPairedKeys()) return;
+            final String apkPath = ctx.getApplicationInfo().sourceDir;
+            if (apkPath == null || apkPath.isEmpty()) return;
+            binding = true;
+            changed();
+            new Thread(() -> {
+                try {
+                    if (!adbMgr.isConnected()) {
+                        com.aamaker.app.stage.CarStageConfig cfg =
+                                com.aamaker.app.stage.CarStagePrefs.INSTANCE.load(ctx);
+                        adbMgr.tryEnsureConnected(cfg.getAdbHost(), cfg.getAdbPort(), 4000L);
+                    }
+                    if (!adbMgr.isConnected()) {
+                        binding = false;
+                        changed();
+                        return;
+                    }
+                    String cls = DisplayService.class.getName();
+                    String cmd = "pkill -f '[a]amaker_anyauto_display' >/dev/null 2>&1; CLASSPATH='" + apkPath
+                            + "' /system/bin/app_process /system/bin --nice-name=aamaker_anyauto_display "
+                            + cls + " >/dev/null 2>&1 &";
+                    boolean ok = adbMgr.execBackgroundShell(cmd);
+                    if (!ok) {
+                        binding = false;
+                        changed();
+                        return;
+                    }
+                    main.postDelayed(() -> {
+                        if (service == null && binding) {
+                            binding = false;
+                            changed();
+                        }
+                    }, 8000L);
+                } catch (Throwable t) {
+                    binding = false;
+                    changed();
+                    Log.w(TAG, "Local Wireless ADB DisplayService start failed", t);
+                }
+            }, "AnyAuto-LocalAdbStart").start();
+        } catch (Throwable t) {
+            binding = false;
         }
     }
 

@@ -71,6 +71,7 @@ final class PhonePower {
     private int blankCount;
     private long lastBlank;
     private long settleUntil; // darkenings before this are not counted (the phone is still waking)
+    private long wakeStartedAt;
     private Object idm;
     private Method requestDisplayPower;
 
@@ -99,10 +100,20 @@ final class PhonePower {
 
             @Override
             public void onDisplayChanged(int id) {
-                if (id == Display.DEFAULT_DISPLAY && armed) blank();
+                if (id == Display.DEFAULT_DISPLAY && armed) {
+                    long sinceWake = SystemClock.uptimeMillis() - wakeStartedAt;
+                    if (sinceWake >= 0 && sinceWake < 300) {
+                        h.removeCallbacks(delayedBlank);
+                        h.postDelayed(delayedBlank, 300 - sinceWake);
+                    } else {
+                        blank();
+                    }
+                }
             }
         }, h);
     }
+
+    private final Runnable delayedBlank = this::blank;
 
     /**
      * The car shows AnyAuto (true; also on every touch-down on the car screen, which wakes the
@@ -173,15 +184,31 @@ final class PhonePower {
     private void arm() {
         h.removeCallbacks(checkRestored);
         if (armed) {
-            blank();
+            if (!pm.isInteractive()) {
+                settleUntil = SystemClock.uptimeMillis() + WAKE_SETTLE_MS;
+                holdLock();
+                wakeUp();
+                h.removeCallbacks(delayedBlank);
+                h.postDelayed(delayedBlank, 300);
+            } else {
+                blank();
+            }
             return;
         }
         wokeIt = !pm.isInteractive();
         settleUntil = wokeIt ? SystemClock.uptimeMillis() + WAKE_SETTLE_MS : 0;
         holdLock();
+        if (wokeIt) {
+            wakeUp();
+        }
         armed = true;
         Log.i(TAG, "phone kept awake with its screen " + (dark ? "off" : "on") + (wokeIt ? " (woken for the car)" : ""));
-        blank();
+        if (wokeIt) {
+            h.removeCallbacks(delayedBlank);
+            h.postDelayed(delayedBlank, 300);
+        } else {
+            blank();
+        }
         h.removeCallbacks(watch);
         h.postDelayed(watch, WATCH_MS);
     }
@@ -198,7 +225,8 @@ final class PhonePower {
                 settleUntil = SystemClock.uptimeMillis() + WAKE_SETTLE_MS;
                 holdLock();
                 wakeUp();
-                blank();
+                h.removeCallbacks(delayedBlank);
+                h.postDelayed(delayedBlank, 300);
                 h.postDelayed(this, WATCH_MS);
                 return;
             }
@@ -209,6 +237,7 @@ final class PhonePower {
 
     private void disarm() {
         h.removeCallbacks(watch);
+        h.removeCallbacks(delayedBlank);
         if (!armed) return;
         armed = false;
         if (wokeIt) {
@@ -224,9 +253,9 @@ final class PhonePower {
     /** The wake lock for now: bright while the screen is to be dark, dim while it stays on. */
     private void holdLock() {
         PowerManager.WakeLock want = dark && !fights ? brightLock : dimLock;
-        if (held == want) return;
+        if (held == want && held.isHeld()) return;
         want.acquire();
-        if (held != null) held.release();
+        if (held != null && held != want) held.release();
         held = want;
     }
 
@@ -247,12 +276,13 @@ final class PhonePower {
     }
 
     private void wakeUp() {
+        wakeStartedAt = SystemClock.uptimeMillis();
         try {
             try {
                 pm.getClass().getMethod("wakeUp", long.class, int.class, String.class)
-                        .invoke(pm, SystemClock.uptimeMillis(), 0, "AnyAuto");
+                        .invoke(pm, wakeStartedAt, 0, "AnyAuto");
             } catch (NoSuchMethodException e) {
-                pm.getClass().getMethod("wakeUp", long.class).invoke(pm, SystemClock.uptimeMillis());
+                pm.getClass().getMethod("wakeUp", long.class).invoke(pm, wakeStartedAt);
             }
         } catch (Throwable t) {
             Log.w(TAG, "wakeUp failed", t);

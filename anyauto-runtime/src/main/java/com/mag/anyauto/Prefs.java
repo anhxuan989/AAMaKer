@@ -92,22 +92,22 @@ public final class Prefs {
         p(c).edit().remove(LAST).apply();
     }
 
-    /** AnyAuto's navigation bar on the car screen (Back, Apps, Keyboard, Close, Hide); default shown. */
+    /** AnyAuto's navigation bar on the car screen (Back, Apps, Keyboard, Close, Hide); default collapsed to top-left pill. */
     public static boolean navBar(Context c) {
-        return p(c).getBoolean(NAV_BAR, true);
+        return p(c).getBoolean(NAV_BAR, false);
     }
 
     public static void setNavBar(Context c, boolean on) {
         p(c).edit().putBoolean(NAV_BAR, on).apply();
     }
 
-    /** The navigation bar on the car screen's right edge instead of the left (default left). */
+    /** Navigation controls are strictly locked to the top-left / left side across all modes. */
     public static boolean navRight(Context c) {
-        return p(c).getBoolean(NAV_RIGHT, false);
+        return false;
     }
 
     public static void setNavRight(Context c, boolean right) {
-        p(c).edit().putBoolean(NAV_RIGHT, right).apply();
+        p(c).edit().putBoolean(NAV_RIGHT, false).apply();
     }
 
     /**

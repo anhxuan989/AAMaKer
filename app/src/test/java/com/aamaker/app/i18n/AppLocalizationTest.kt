@@ -13,7 +13,7 @@ class AppLocalizationTest {
 
     // Characters exclusive to Vietnamese orthography (not used in ES/FR/PT/DE)
     private val vietnameseExclusiveRegex = Regex(
-        "[ăâđơưĂÂĐƠƯảạấầẩẫậắằẳẵặẻẽẹếềểễệỉịỏọốồổỗộớờởỡợủụứừửữựỳỷỹỵẢẠẤẦẨẪẬẮẰẲẴẶẺẼẸẾỀỂỄỆỈỊỎỌỐỒỔỖỘỚỜỞỠỢỦỤỨỪỬỮỰỲỶỸỴ]"
+        "[ăđơưĂĐƠƯảạấầẩẫậắằẳẵặẻẽẹếềểễệỉịỏọốồổỗộớờởỡợủụứừửữựỳỷỹỵẢẠẤẦẨẪẬẮẰẲẴẶẺẼẸẾỀỂỄỆỈỊỎỌỐỒỔỖỘỚỜỞỠỢỦỤỨỪỬỮỰỲỶỸỴ]"
     )
 
     @Test
@@ -139,6 +139,102 @@ class AppLocalizationTest {
                     assertFalse(
                         "Leaked Vietnamese characters in ${lang.code}: $value",
                         vietnameseExclusiveRegex.containsMatchIn(value)
+                    )
+                }
+            }
+
+            val cs = CarStageLocalization.of(lang)
+            val csValues = listOf(
+                cs.navCarStage,
+                cs.title,
+                cs.subtitle,
+                cs.bridgeCardTitle,
+                cs.statusConnected,
+                cs.statusConnecting,
+                cs.statusDisconnected,
+                cs.engineVirtualDevice,
+                cs.engineTrustedDisplay,
+                cs.engineStopped,
+                cs.btnConnect,
+                cs.btnDisconnect,
+                cs.btnGrantShizuku,
+                cs.btnStartDisplay,
+                cs.optionsCardTitle,
+                cs.optVirtualDeviceTitle,
+                cs.optVirtualDeviceDesc,
+                cs.optMoveTaskTitle,
+                cs.optMoveTaskDesc,
+                cs.optOrientationTitle,
+                cs.optOrientationDesc,
+                cs.optPlaybackTitle,
+                cs.optPlaybackDesc,
+                cs.pinnedAppsTitle,
+                cs.pinnedAppsEmpty,
+                cs.btnAddApp,
+                cs.btnLaunch,
+                cs.btnRemove,
+                cs.pickerTitle,
+                cs.pickerSearchHint,
+                cs.btnClose,
+                cs.logsTitle,
+                cs.displayIdLabel,
+                cs.bridgeModeShizuku,
+                cs.bridgeModeLocalAdb,
+                cs.engineLocalAdb,
+                cs.adbHostLabel,
+                cs.adbPortLabel,
+                cs.btnScanMdns,
+                cs.btnStopScan,
+                cs.btnOpenDevOptions,
+                cs.adbFoundPortFormat,
+                cs.layoutCardTitle,
+                cs.layoutSingle,
+                cs.btnSwapPanes,
+                cs.dockEdgeTitle,
+                cs.dockEdgeLeft,
+                cs.dockEdgeRight,
+                cs.dockEdgeBottom,
+                cs.autoHideTitle,
+                cs.minimalistHint,
+                cs.carAppsButton,
+                cs.carPickerTitle,
+                cs.carPickerEmpty,
+                cs.carSplitButton,
+                cs.carPickSecondAppTitle,
+                cs.carApp1Button,
+                cs.carApp2Button,
+                cs.carRestartButton,
+                cs.optImeOnPhoneTitle,
+                cs.optImeOnPhoneDesc,
+                cs.btnPairAdb,
+                cs.btnStopPairing,
+                cs.adbPairingPortFormat,
+                cs.adbPairingCodeLabel,
+                cs.adbPairingGuide,
+                cs.notifPairChannelName,
+                cs.notifPairSearchingTitle,
+                cs.notifPairSearchingText,
+                cs.notifPairFoundTitle,
+                cs.notifPairFoundText,
+                cs.notifPairInputLabel,
+                cs.notifPairWorkingText,
+                cs.notifPairSuccessTitle,
+                cs.notifPairSuccessText,
+                cs.notifPairFailedTitle,
+                cs.pairDialogTitle,
+                cs.pairStep1,
+                cs.pairStep2,
+                cs.pairStep3,
+                cs.btnNotifPermission,
+                cs.notifDisabledWarning,
+                cs.btnConfirmPair
+            )
+            for (csVal in csValues) {
+                assertTrue("Blank CarStage string in ${lang.code}", csVal.isNotBlank())
+                if (lang != AppLanguage.VI) {
+                    assertFalse(
+                        "Leaked Vietnamese characters in CarStage ${lang.code}: $csVal",
+                        vietnameseExclusiveRegex.containsMatchIn(csVal)
                     )
                 }
             }

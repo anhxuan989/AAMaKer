@@ -69,4 +69,13 @@ interface IDisplayService {
     // AnyAuto, its screen dark unless a setting keeps it on), 0 = its own (the phone is left
     // alone), -1 = no display yet.
     int phoneGroup() = 15;
+
+    // Resizes the existing virtual display in-place without detaching or replacing its surface.
+    // Returns the display id, or -1 if no valid display exists.
+    int resize(int width, int height, int dpi) = 16;
+
+    // Verifies the virtual display is still valid and ensures the target app's task is alive and
+    // focused at the top of this display (moving it back if an OEM/system action shifted it to
+    // Display 0, or relaunching if its task died). Returns "ok", "no display", or an error reason.
+    String ensureApp(in ComponentName component, boolean forceComposite) = 17;
 }

@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.util.LruCache
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -39,6 +40,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.CheckCircle
@@ -47,6 +49,7 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
@@ -60,6 +63,7 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Cast
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DirectionsCar
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -112,12 +116,22 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aamaker.app.BuildConfig
 import com.aamaker.app.data.TargetAppCandidate
+import com.aamaker.app.i18n.AboutLocalization
+import com.aamaker.app.i18n.AboutStrings
 import com.aamaker.app.i18n.AppLanguage
 import com.aamaker.app.i18n.AppStrings
 import com.aamaker.app.i18n.AppTranslations
 import com.aamaker.app.i18n.CarStageLocalization
+import com.aamaker.app.i18n.CarStageStrings
+import com.aamaker.app.stage.CarStageBridge
 import com.aamaker.app.stage.CarStageTab
+import com.aamaker.app.stage.ShizukuStylePairingDialog
+import android.Manifest
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.ContextCompat
 import com.aamaker.core.installer.model.EnvironmentStatus
 import com.mag.anyauto.Apps
 import com.mag.anyauto.Prefs
@@ -328,6 +342,14 @@ private fun SectionGroup(
     }
 }
 
+private enum class OtherSubScreen {
+    Menu,
+    AALauncher,
+    Environment,
+    Language,
+    About
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AAMaKerAppScreen(viewModel: MainViewModel) {
@@ -338,6 +360,9 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
     val carStageStrings = remember(state.selectedLanguage) {
         CarStageLocalization.of(state.selectedLanguage)
     }
+    val aboutStrings = remember(state.selectedLanguage) {
+        AboutLocalization.of(state.selectedLanguage)
+    }
     val layoutDirection = if (state.selectedLanguage == AppLanguage.AR) {
         LayoutDirection.Rtl
     } else {
@@ -345,8 +370,13 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
     }
 
     var currentTab by rememberSaveable { mutableIntStateOf(0) }
-    var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
+    var otherSubScreen by rememberSaveable { mutableStateOf(OtherSubScreen.Menu) }
     var pendingDirectInstallOnPick by rememberSaveable { mutableStateOf(false) }
+
+    val isInOtherSubScreen = currentTab == 3 && otherSubScreen != OtherSubScreen.Menu
+    BackHandler(enabled = isInOtherSubScreen) {
+        otherSubScreen = OtherSubScreen.Menu
+    }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
@@ -368,59 +398,56 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
             )
         }
 
-        if (showLanguageDialog) {
-            LanguagePickerDialog(
-                currentLanguage = state.selectedLanguage,
-                strings = strings,
-                layoutDirection = layoutDirection,
-                onSelectLanguage = { lang ->
-                    viewModel.selectLanguage(lang)
-                    showLanguageDialog = false
-                },
-                onDismiss = { showLanguageDialog = false }
-            )
-        }
-
         Scaffold(
             modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
                     scrollBehavior = scrollBehavior,
+                    navigationIcon = {
+                        if (isInOtherSubScreen) {
+                            IconButton(onClick = { otherSubScreen = OtherSubScreen.Menu }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = aboutStrings.closeButton
+                                )
+                            }
+                        }
+                    },
                     title = {
-                        Column {
+                        if (isInOtherSubScreen) {
+                            val subTitle = when (otherSubScreen) {
+                                OtherSubScreen.AALauncher -> strings.aaLauncherButtonTitle
+                                OtherSubScreen.Environment -> strings.navEnvironment
+                                OtherSubScreen.Language -> strings.languageDialogTitle
+                                OtherSubScreen.About -> aboutStrings.dialogTitle
+                                OtherSubScreen.Menu -> aboutStrings.navOther
+                            }
                             Text(
-                                text = "AAMaKer",
+                                text = subTitle,
                                 style = MaterialTheme.typography.titleLarge,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Text(
-                                text = strings.appSubtitle,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        } else {
+                            Column {
+                                Text(
+                                    text = "AAMaKer",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = strings.appSubtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     },
                     actions = {
-                        TextButton(
-                            onClick = { showLanguageDialog = true },
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Language,
-                                contentDescription = strings.languageDialogTitle,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = state.selectedLanguage.code.uppercase(),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
                         IconButton(onClick = {
                             viewModel.refreshEnvironment()
                             viewModel.loadInstalledApps(forceRefresh = true)
@@ -495,16 +522,19 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                     )
                     NavigationBarItem(
                         selected = currentTab == 3,
-                        onClick = { currentTab = 3 },
+                        onClick = {
+                            currentTab = 3
+                            otherSubScreen = OtherSubScreen.Menu
+                        },
                         icon = {
                             Icon(
-                                imageVector = if (currentTab == 3) Icons.Default.Security else Icons.Outlined.Security,
-                                contentDescription = strings.navEnvironment
+                                imageVector = if (currentTab == 3) Icons.Default.MoreHoriz else Icons.Outlined.MoreHoriz,
+                                contentDescription = aboutStrings.navOther
                             )
                         },
                         label = {
                             Text(
-                                text = strings.navEnvironment,
+                                text = aboutStrings.navOther,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -533,6 +563,7 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                     1 -> PatchAndInstallTab(
                         state = state,
                         strings = strings,
+                        carStageStrings = carStageStrings,
                         viewModel = viewModel,
                         onNavigateToApps = { currentTab = 0 },
                         onPickExternalFile = {
@@ -549,12 +580,36 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
                         strings = carStageStrings,
                         onRequestShizuku = viewModel::requestShizukuPermission
                     )
-                    3 -> EnvironmentDiagnosticTab(
-                        env = state.envStatus,
-                        strings = strings,
-                        onRequestShizuku = viewModel::requestShizukuPermission,
-                        onRefresh = viewModel::refreshEnvironment
-                    )
+                    3 -> when (otherSubScreen) {
+                        OtherSubScreen.Menu -> OtherMenuTab(
+                            selectedLanguage = state.selectedLanguage,
+                            strings = strings,
+                            aboutStrings = aboutStrings,
+                            onOpenAALauncher = { otherSubScreen = OtherSubScreen.AALauncher },
+                            onOpenEnvironment = { otherSubScreen = OtherSubScreen.Environment },
+                            onOpenLanguage = { otherSubScreen = OtherSubScreen.Language },
+                            onOpenAbout = { otherSubScreen = OtherSubScreen.About }
+                        )
+                        OtherSubScreen.AALauncher -> AndroidAutoLauncherAppsScreen(
+                            strings = strings
+                        )
+                        OtherSubScreen.Environment -> EnvironmentDiagnosticTab(
+                            env = state.envStatus,
+                            strings = strings,
+                            carStageStrings = carStageStrings,
+                            onRequestShizuku = viewModel::requestShizukuPermission,
+                            onRefresh = viewModel::refreshEnvironment
+                        )
+                        OtherSubScreen.Language -> LanguagePickerScreen(
+                            currentLanguage = state.selectedLanguage,
+                            onSelectLanguage = { lang ->
+                                viewModel.selectLanguage(lang)
+                            }
+                        )
+                        OtherSubScreen.About -> AboutScreen(
+                            strings = aboutStrings
+                        )
+                    }
                 }
             }
         }
@@ -562,40 +617,30 @@ fun AAMaKerAppScreen(viewModel: MainViewModel) {
 }
 
 @Composable
-private fun LanguagePickerDialog(
+private fun LanguagePickerScreen(
     currentLanguage: AppLanguage,
-    strings: AppStrings,
-    layoutDirection: LayoutDirection,
-    onSelectLanguage: (AppLanguage) -> Unit,
-    onDismiss: () -> Unit
+    onSelectLanguage: (AppLanguage) -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
-                Text(
-                    text = strings.languageDialogTitle,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        text = {
-            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 400.dp)
-                ) {
-                    itemsIndexed(AppLanguage.entries, key = { _, lang -> lang.code }) { index, lang ->
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        item {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    AppLanguage.entries.forEachIndexed { index, lang ->
                         val isSelected = lang == currentLanguage
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(MaterialTheme.shapes.small)
                                 .clickable { onSelectLanguage(lang) }
-                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
@@ -606,7 +651,7 @@ private fun LanguagePickerDialog(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = lang.nativeName,
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
@@ -618,26 +663,20 @@ private fun LanguagePickerDialog(
                             }
                             Text(
                                 text = lang.flagEmoji,
-                                fontSize = 18.sp
+                                fontSize = 20.sp
                             )
                         }
                         if (index < AppLanguage.entries.lastIndex) {
                             HorizontalDivider(
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                modifier = Modifier.padding(horizontal = 16.dp)
                             )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
-                TextButton(onClick = onDismiss) {
-                    Text(strings.closeButton)
-                }
-            }
         }
-    )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -1016,11 +1055,21 @@ private fun ImportApkSection(
 private fun PatchAndInstallTab(
     state: MainUiState,
     strings: AppStrings,
+    carStageStrings: CarStageStrings,
     viewModel: MainViewModel,
     onNavigateToApps: () -> Unit,
     onPickExternalFile: () -> Unit,
     onPickExternalFileDirectInstall: () -> Unit
 ) {
+    val context = LocalContext.current
+    val stageState by CarStageBridge.state.collectAsState()
+    var showPairingDialog by remember { mutableStateOf(false) }
+    if (showPairingDialog) {
+        ShizukuStylePairingDialog(
+            strings = carStageStrings,
+            onDismiss = { showPairingDialog = false }
+        )
+    }
     val candidate = state.selectedCandidate
     var showSecondaryPickerDialog by rememberSaveable { mutableStateOf(false) }
     val saveApkLauncher = rememberLauncherForActivityResult(
@@ -1702,6 +1751,24 @@ private fun PatchAndInstallTab(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (mode == InstallMode.SHIZUKU && selected && state.envStatus?.isShizukuPermissionGranted != true) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            FilledTonalButton(
+                                onClick = {
+                                    if (stageState.isPairingServiceRunning) {
+                                        CarStageBridge.stopShizukuStylePairingService(context)
+                                    } else {
+                                        showPairingDialog = true
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = if (stageState.isPairingServiceRunning) carStageStrings.btnStopPairing else carStageStrings.btnPairAdb,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                        }
                     }
                 }
                 if (index < modes.lastIndex) {
@@ -2009,20 +2076,186 @@ private fun PatchAndInstallTab(
 }
 
 @Composable
+private fun OtherMenuTab(
+    selectedLanguage: AppLanguage,
+    strings: AppStrings,
+    aboutStrings: AboutStrings,
+    onOpenAALauncher: () -> Unit,
+    onOpenEnvironment: () -> Unit,
+    onOpenLanguage: () -> Unit,
+    onOpenAbout: () -> Unit
+) {
+    val versionSummary = remember { "v${BuildConfig.VERSION_NAME.trim()} (${BuildConfig.VERSION_CODE})" }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Top item: Android Auto All-App Launcher
+        FilledTonalButton(
+            onClick = onOpenAALauncher,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.DirectionsCar,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = strings.aaLauncherButtonTitle,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = strings.aaLauncherButtonSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        SectionGroup(title = aboutStrings.generalSectionTitle) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenEnvironment)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Security,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = strings.navEnvironment,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = strings.envHeaderTitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            DiagDivider()
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenLanguage)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Language,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = strings.languageDialogTitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "${selectedLanguage.flagEmoji} ${selectedLanguage.nativeName}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            DiagDivider()
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onOpenAbout)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = aboutStrings.aboutTooltip,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = versionSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun EnvironmentDiagnosticTab(
     env: EnvironmentStatus?,
     strings: AppStrings,
+    carStageStrings: CarStageStrings,
     onRequestShizuku: () -> Unit,
     onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
-    var showAALauncherDialog by remember { mutableStateOf(false) }
+    val stageState by CarStageBridge.state.collectAsState()
+    var showPairingDialog by remember { mutableStateOf(false) }
 
-    if (showAALauncherDialog) {
-        AndroidAutoLauncherAppsDialog(
-            strings = strings,
-            onDismiss = { showAALauncherDialog = false }
+    if (showPairingDialog) {
+        ShizukuStylePairingDialog(
+            strings = carStageStrings,
+            onDismiss = { showPairingDialog = false }
         )
+    }
+
+    LaunchedEffect(stageState.isBound, stageState.isPaired) {
+        if (stageState.isBound || stageState.isPaired) {
+            onRefresh()
+        }
     }
 
     Column(
@@ -2077,6 +2310,38 @@ private fun EnvironmentDiagnosticTab(
                     null
                 },
                 onAction = onRequestShizuku
+            )
+            DiagDivider()
+
+            val localAdbActive = stageState.isBound ||
+                runCatching { com.aamaker.core.installer.adb.LocalAdbConnectionManager.getInstance(context).isConnected }.getOrDefault(false)
+            DiagItemRow(
+                title = carStageStrings.bridgeModeLocalAdb,
+                value = when {
+                    localAdbActive -> "${carStageStrings.statusConnected} (${carStageStrings.engineLocalAdb})"
+                    stageState.isPairingServiceRunning -> carStageStrings.notifPairSearchingTitle
+                    else -> carStageStrings.adbPairingGuide
+                },
+                isOk = localAdbActive,
+                actionLabel = when {
+                    stageState.isPairingServiceRunning -> carStageStrings.btnStopPairing
+                    !localAdbActive -> carStageStrings.btnPairAdb
+                    else -> carStageStrings.btnDisconnect
+                },
+                onAction = {
+                    when {
+                        stageState.isPairingServiceRunning -> {
+                            CarStageBridge.stopShizukuStylePairingService(context)
+                        }
+                        localAdbActive -> {
+                            CarStageBridge.disconnect()
+                            onRefresh()
+                        }
+                        else -> {
+                            showPairingDialog = true
+                        }
+                    }
+                }
             )
             DiagDivider()
 
@@ -2207,49 +2472,12 @@ private fun EnvironmentDiagnosticTab(
                 }
             }
         }
-
-        // Independent button: Open all phone apps from AAMaKer on Android Auto
-        FilledTonalButton(
-            onClick = { showAALauncherDialog = true },
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.DirectionsCar,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = strings.aaLauncherButtonTitle,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = strings.aaLauncherButtonSubtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Icon(
-                imageVector = Icons.Outlined.ChevronRight,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp)
-            )
-        }
     }
 }
 
 @Composable
-private fun AndroidAutoLauncherAppsDialog(
-    strings: AppStrings,
-    onDismiss: () -> Unit
+private fun AndroidAutoLauncherAppsScreen(
+    strings: AppStrings
 ) {
     val context = LocalContext.current
     var allApps by remember { mutableStateOf<List<Apps.App>>(emptyList()) }
@@ -2282,56 +2510,44 @@ private fun AndroidAutoLauncherAppsDialog(
         allApps.count { selectedSet.contains(it.component.flattenToString()) }
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .fillMaxHeight(0.86f),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DirectionsCar,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = strings.aaLauncherDialogTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (!isLoading) {
-                            Text(
-                                text = strings.aaLauncherEnabledCountFormat(enabledCount, allApps.size),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                }
-
+            Icon(
+                imageVector = Icons.Default.DirectionsCar,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = strings.aaLauncherDialogSubtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = strings.aaLauncherDialogTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
                 )
+                if (!isLoading) {
+                    Text(
+                        text = strings.aaLauncherEnabledCountFormat(enabledCount, allApps.size),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+
+        Text(
+            text = strings.aaLauncherDialogSubtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
                 OutlinedTextField(
                     value = searchQuery,
@@ -2500,18 +2716,8 @@ private fun AndroidAutoLauncherAppsDialog(
                         }
                     }
                 }
-
-                Button(
-                    onClick = onDismiss,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(text = strings.aaLauncherCloseButton)
-                }
             }
         }
-    }
-}
 
 @Composable
 private fun DiagDivider() {
@@ -2591,40 +2797,40 @@ private fun DisclaimerDialog(
     ) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
             Surface(
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 6.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Surface(
                             shape = CircleShape,
                             color = MaterialTheme.colorScheme.errorContainer,
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(34.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Warning,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.size(22.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
                         Text(
                             text = "Disclaimer & Safety Notice",
-                            style = MaterialTheme.typography.titleLarge,
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -2633,18 +2839,18 @@ private fun DisclaimerDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 320.dp)
+                            .weight(1f, fill = false)
                             .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
                             text = "AAMaKer is an open-source project provided strictly for educational, research, and learning purposes.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "All features and tools in this application must NOT be misused while driving or operating a vehicle. Always keep your full attention on the road and comply with all applicable traffic laws and regulations.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
@@ -2660,24 +2866,25 @@ private fun DisclaimerDialog(
 
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable { isAgreed = !isAgreed }
-                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                                .padding(vertical = 2.dp, horizontal = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
                                 checked = isAgreed,
-                                onCheckedChange = { isAgreed = it }
+                                onCheckedChange = { isAgreed = it },
+                                modifier = Modifier.size(36.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "I have read, understood, and agree to the disclaimer above.",
-                                style = MaterialTheme.typography.bodyMedium,
+                                style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -2686,14 +2893,15 @@ private fun DisclaimerDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable { dontShowAgain = !dontShowAgain }
-                                .padding(vertical = 4.dp, horizontal = 4.dp),
+                                .padding(vertical = 2.dp, horizontal = 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Checkbox(
                                 checked = dontShowAgain,
-                                onCheckedChange = { dontShowAgain = it }
+                                onCheckedChange = { dontShowAgain = it },
+                                modifier = Modifier.size(36.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
